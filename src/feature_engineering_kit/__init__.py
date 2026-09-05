@@ -11,7 +11,9 @@ from .data import (
     load_synthetic_churn_dataset,
     stratified_split,
 )
+from .datetime import DatetimeExtractor
 from .encoding import OneHotEncoder, OrdinalEncoder, TargetEncoder
+from .imputation import CategoricalImputer, NumericImputer
 from .scaling import MinMaxScaler, RobustScaler, StandardScaler
 
 __version__ = "0.1.0"
@@ -27,10 +29,13 @@ __all__ = [
     "column_schema",
     "load_synthetic_churn_dataset",
     "stratified_split",
+    "NumericImputer",
+    "CategoricalImputer",
     "OneHotEncoder",
     "OrdinalEncoder",
     "TargetEncoder",
     "StandardScaler",
     "MinMaxScaler",
     "RobustScaler",
+    "DatetimeExtractor",
 ]
