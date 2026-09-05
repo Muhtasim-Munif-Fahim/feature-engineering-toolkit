@@ -21,6 +21,13 @@ from .feature_selection import (
 )
 from .imputation import CategoricalImputer, NumericImputer
 from .interaction import InteractionFeatures
+from .pipeline import (
+    ChurnEvaluation,
+    FeatureEngineeringPipeline,
+    build_baseline_pipeline,
+    build_preprocessing_pipeline,
+    run_churn_workflow,
+)
 from .polynomial import PolynomialFeatures
 from .scaling import MinMaxScaler, RobustScaler, StandardScaler
 
@@ -52,4 +59,9 @@ __all__ = [
     "CorrelationFilter",
     "MutualInfoSelection",
     "SelectFromModel",
+    "FeatureEngineeringPipeline",
+    "build_preprocessing_pipeline",
+    "build_baseline_pipeline",
+    "run_churn_workflow",
+    "ChurnEvaluation",
 ]
