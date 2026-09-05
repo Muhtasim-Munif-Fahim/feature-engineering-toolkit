@@ -29,6 +29,7 @@ from .pipeline import (
     run_churn_workflow,
 )
 from .polynomial import PolynomialFeatures
+from .reporting import render_markdown_report, save_report
 from .scaling import MinMaxScaler, RobustScaler, StandardScaler
 
 __version__ = "0.1.0"
@@ -64,4 +65,6 @@ __all__ = [
     "build_baseline_pipeline",
     "run_churn_workflow",
     "ChurnEvaluation",
+    "render_markdown_report",
+    "save_report",
 ]
