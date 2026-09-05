@@ -14,6 +14,8 @@ from .data import (
 from .datetime import DatetimeExtractor
 from .encoding import OneHotEncoder, OrdinalEncoder, TargetEncoder
 from .imputation import CategoricalImputer, NumericImputer
+from .interaction import InteractionFeatures
+from .polynomial import PolynomialFeatures
 from .scaling import MinMaxScaler, RobustScaler, StandardScaler
 
 __version__ = "0.1.0"
@@ -38,4 +40,6 @@ __all__ = [
     "MinMaxScaler",
     "RobustScaler",
     "DatetimeExtractor",
+    "PolynomialFeatures",
+    "InteractionFeatures",
 ]
