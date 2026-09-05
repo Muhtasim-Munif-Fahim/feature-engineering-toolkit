@@ -13,6 +13,12 @@ from .data import (
 )
 from .datetime import DatetimeExtractor
 from .encoding import OneHotEncoder, OrdinalEncoder, TargetEncoder
+from .feature_selection import (
+    CorrelationFilter,
+    MutualInfoSelection,
+    SelectFromModel,
+    VarianceThreshold,
+)
 from .imputation import CategoricalImputer, NumericImputer
 from .interaction import InteractionFeatures
 from .polynomial import PolynomialFeatures
@@ -42,4 +48,8 @@ __all__ = [
     "DatetimeExtractor",
     "PolynomialFeatures",
     "InteractionFeatures",
+    "VarianceThreshold",
+    "CorrelationFilter",
+    "MutualInfoSelection",
+    "SelectFromModel",
 ]
