@@ -46,10 +46,11 @@ class FeatureEngineeringPipeline:
         self.feature_names_out_: list[str] = []
 
     def fit(self, X: pd.DataFrame, y=None) -> "FeatureEngineeringPipeline":
+        # Use fit_transform per step so out-of-fold target encoding (and any
+        # other fit-time mapping) is what downstream steps see during fit.
         Xt = X.copy()
         for _, step in self.steps:
-            step.fit(Xt, y)
-            Xt = step.transform(Xt)
+            Xt = step.fit_transform(Xt, y)
         self.feature_names_out_ = list(Xt.columns)
         return self
 
@@ -84,11 +85,17 @@ def build_preprocessing_pipeline(
     datetime_features=None,
     variance_threshold: float = 0.0,
     drop_high_correlation: float | None = 0.95,
+    target_encode_cv=5,
+    random_state=None,
 ) -> FeatureEngineeringPipeline:
     """Build a standard preprocessing pipeline from a feature DataFrame.
 
     The pipeline imputes, encodes, extracts datetime features, scales, expands
     polynomial/interaction features, then filters redundant columns.
+
+    Categorical columns in ``target_encode`` use K-fold out-of-fold mean
+    encoding (``target_encode_cv`` folds, seeded by ``random_state``) so the
+    training matrix does not see a row's own label.
     """
     schema = column_schema(X, target=None)
     numeric = list(schema.numeric)
@@ -105,7 +112,17 @@ def build_preprocessing_pipeline(
             ("impute_categorical", CategoricalImputer(categorical, strategy="most_frequent"))
         )
     for col in target_encode:
-        steps.append((f"target_encode_{col}", TargetEncoder(columns=[col], target=TARGET_COLUMN)))
+        steps.append(
+            (
+                f"target_encode_{col}",
+                TargetEncoder(
+                    columns=[col],
+                    target=TARGET_COLUMN,
+                    cv=target_encode_cv,
+                    random_state=random_state,
+                ),
+            )
+        )
     for col in one_hot:
         steps.append((f"one_hot_{col}", OneHotEncoder(columns=[col], drop="first")))
     for col in datetime:
@@ -259,9 +276,10 @@ def run_churn_workflow(
     """Run a reproducible churn-classification workflow end-to-end.
 
     Steps: load synthetic data -> stratified split -> feature engineering
-    (``fit_transform`` on train, ``transform`` on test to prevent leakage) ->
-    train classifier -> evaluate -> return metrics plus a baseline (numeric-only)
-    for comparison.
+    (``fit_transform`` on train, ``transform`` on test to prevent leakage;
+    target encoding uses K-fold out-of-fold means on train and the global
+    mapping on test) -> train classifier -> evaluate -> return metrics plus a
+    baseline (numeric-only) for comparison.
     """
     df = load_synthetic_churn_dataset(n_samples=n_samples, seed=seed)
     train, test = stratified_split(df, test_size=test_size, seed=seed)
@@ -289,6 +307,7 @@ def run_churn_workflow(
         datetime_features=datetime_features,
         variance_threshold=variance_threshold,
         drop_high_correlation=drop_high_correlation,
+        random_state=seed,
     )
     X_train_eng = pipeline.fit_transform(X_train, y_train)
     X_test_eng = pipeline.transform(X_test)
