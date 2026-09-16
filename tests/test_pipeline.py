@@ -9,8 +9,10 @@ from feature_engineering_kit import (
     FeatureEngineeringPipeline,
     NumericImputer,
     StandardScaler,
+    TargetEncoder,
     run_churn_workflow,
 )
+from feature_engineering_kit.pipeline import build_preprocessing_pipeline
 
 
 def _small_df():
@@ -80,3 +82,19 @@ def test_run_churn_workflow_random_forest_runs() -> None:
 def test_unknown_model_raises() -> None:
     with pytest.raises(ValueError, match="unknown model"):
         run_churn_workflow(n_samples=200, seed=0, model="nope")
+
+
+def test_preprocessing_pipeline_target_encoder_is_out_of_fold() -> None:
+    df = pd.DataFrame(
+        {
+            "age": [20.0, 30.0, 40.0, 50.0],
+            "plan": ["a", "b", "a", "b"],
+        }
+    )
+    pipe = build_preprocessing_pipeline(
+        df, target_encode=["plan"], one_hot=[], random_state=0
+    )
+    enc = dict(pipe.steps)["target_encode_plan"]
+    assert isinstance(enc, TargetEncoder)
+    assert enc.cv == 5
+    assert enc.random_state == 0
