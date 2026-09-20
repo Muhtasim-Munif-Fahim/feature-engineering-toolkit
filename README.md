@@ -4,7 +4,8 @@ Reusable feature-engineering transformers, an end-to-end ML workflow, and Markdo
 reporting for reproducible data-science projects.
 
 The toolkit ships scikit-learn-style transformers that operate on `pandas.DataFrame`
-objects (imputation, encoding, scaling, datetime extraction, polynomial/interaction
+objects (imputation, encoding including out-of-fold target and Weight of Evidence /
+Information Value, scaling, datetime extraction, polynomial/interaction
 features, and feature selection), a small workflow that loads a synthetic churn
 dataset, engineers features, trains a classifier, evaluates it, and writes a Markdown
 report, and a console-script entry point.
@@ -74,3 +75,38 @@ The churn workflow target-encodes `plan` this way: `run_churn_workflow` and
 `build_preprocessing_pipeline` pass the run seed into `TargetEncoder` so fold
 assignments are reproducible, then call `fit_transform` on the train split and
 `transform` on the test split.
+
+## Weight of Evidence and Information Value
+
+`WoEEncoder` replaces categorical values with Weight of Evidence for a binary
+target:
+
+`WoE_i = ln( P(X=i | y=0) / P(X=i | y=1) )`
+
+Laplace `smoothing` (default `0.5`) keeps the log defined when a category has
+zero events or non-events. Unseen categories map to `0.0`. After `fit`, each
+column's Information Value is available on `iv_` and as a ranked table from
+`iv_report()` (Siddiqi strength labels: unpredictive / weak / medium / strong /
+suspicious). `information_value(X, y, columns)` computes IV without encoding.
+
+The same leakage rule as target encoding applies: a rare category's raw WoE
+reconstructs that row's label. Default `cv=5` makes `fit_transform` out-of-fold;
+`transform` always uses the full-training mapping and IV tables.
+
+```python
+from feature_engineering_kit import WoEEncoder, information_value
+
+enc = WoEEncoder(columns=["plan", "region"], target="churn", cv=5, random_state=0)
+X_train_woe = enc.fit_transform(X_train, y_train)  # out-of-fold WoE
+X_test_woe = enc.transform(X_test)                 # global training mapping
+print(enc.iv_report())
+print(enc.iv_table_)
+print(information_value(X_train, y_train, columns=["plan", "region"]))
+```
+
+Optional churn-workflow hook: pass `woe_encode=["region"]` to
+`run_churn_workflow` / `build_preprocessing_pipeline`, or
+`feature-engineering-toolkit run --woe-encode region`. Those columns are
+WoE-encoded (not one-hot or target-encoded). The Markdown report then includes
+an Information Value section. A column cannot be both target-encoded and
+WoE-encoded. Default runs still target-encode `plan` and one-hot `region`.

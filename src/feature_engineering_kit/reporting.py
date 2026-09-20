@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .encoding import iv_strength
 from .pipeline import ChurnEvaluation
 
 
@@ -62,6 +63,25 @@ def render_markdown_report(result: ChurnEvaluation) -> str:
     else:
         lines.append("_no feature importances available_")
     lines.append("")
+
+    if result.information_values:
+        lines.append("## Information Value (WoE)")
+        lines.append("")
+        lines.append("| Feature | IV | Strength |")
+        lines.append("| --- | ---: | --- |")
+        for name, iv in result.information_values:
+            lines.append(f"| {name} | {iv:.4f} | {iv_strength(iv)} |")
+        lines.append("")
+        if result.iv_details:
+            lines.append("| Feature | Category | n | WoE | IV contrib |")
+            lines.append("| --- | --- | ---: | ---: | ---: |")
+            for row in result.iv_details:
+                lines.append(
+                    f"| {row['column']} | {row['category']} | "
+                    f"{int(row['count'])} | {row['woe']:.4f} | "
+                    f"{row['iv_contribution']:.4f} |"
+                )
+            lines.append("")
 
     lines.append("## Filtering notes")
     lines.append("")

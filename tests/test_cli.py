@@ -45,6 +45,29 @@ def test_cli_run_prints_report_to_stdout(capsys) -> None:
     assert "accuracy=" in out
 
 
+def test_cli_run_woe_encode_includes_iv(tmp_path: Path) -> None:
+    target = tmp_path / "woe_report.md"
+    rc = main(
+        [
+            "run",
+            "--n-samples",
+            "400",
+            "--seed",
+            "0",
+            "--model",
+            "logreg",
+            "--woe-encode",
+            "region",
+            "-o",
+            str(target),
+        ]
+    )
+    assert rc == 0
+    text = target.read_text(encoding="utf-8")
+    assert "## Information Value (WoE)" in text
+    assert "region" in text
+
+
 def test_cli_run_invalid_model_exits_nonzero() -> None:
     with pytest.raises(SystemExit):
         main(["run", "--n-samples", "100", "--model", "bogus"])

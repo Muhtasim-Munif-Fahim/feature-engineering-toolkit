@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from feature_engineering_kit import (
-    ChurnEvaluation,
     render_markdown_report,
     run_churn_workflow,
     save_report,
@@ -31,6 +30,22 @@ def test_report_includes_confusion_matrix_values() -> None:
     # The four integer cells appear in the report.
     for cell in (cm[0][0], cm[0][1], cm[1][0], cm[1][1]):
         assert str(cell) in report
+
+
+def test_report_includes_iv_section_when_woe_used() -> None:
+    result = run_churn_workflow(
+        n_samples=400, seed=0, model="logreg", woe_encode=["region"]
+    )
+    report = render_markdown_report(result)
+    assert "## Information Value (WoE)" in report
+    assert "| Feature | IV | Strength |" in report
+    assert "region" in report
+
+
+def test_report_omits_iv_section_by_default() -> None:
+    result = run_churn_workflow(n_samples=400, seed=0, model="logreg")
+    report = render_markdown_report(result)
+    assert "## Information Value (WoE)" not in report
 
 
 def test_save_report_writes_file(tmp_path: Path) -> None:

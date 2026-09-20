@@ -37,6 +37,13 @@ def _build_run_parser(sub):
         help="drop column pairs with |corr| above this (default: 0.95)",
     )
     run.add_argument(
+        "--woe-encode",
+        nargs="+",
+        default=None,
+        metavar="COLUMN",
+        help="categorical columns to Weight-of-Evidence encode (optional)",
+    )
+    run.add_argument(
         "-o",
         "--output",
         default=None,
@@ -78,6 +85,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         test_size=args.test_size,
         model=args.model,
         drop_high_correlation=args.correlation_threshold,
+        woe_encode=args.woe_encode,
     )
     report = render_markdown_report(result)
     if args.output:

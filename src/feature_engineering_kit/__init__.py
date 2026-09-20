@@ -12,7 +12,14 @@ from .data import (
     stratified_split,
 )
 from .datetime import DatetimeExtractor
-from .encoding import OneHotEncoder, OrdinalEncoder, TargetEncoder
+from .encoding import (
+    OneHotEncoder,
+    OrdinalEncoder,
+    TargetEncoder,
+    WoEEncoder,
+    information_value,
+    iv_strength,
+)
 from .feature_selection import (
     CorrelationFilter,
     MutualInfoSelection,
@@ -50,6 +57,9 @@ __all__ = [
     "OneHotEncoder",
     "OrdinalEncoder",
     "TargetEncoder",
+    "WoEEncoder",
+    "information_value",
+    "iv_strength",
     "StandardScaler",
     "MinMaxScaler",
     "RobustScaler",
