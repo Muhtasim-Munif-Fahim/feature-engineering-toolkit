@@ -167,28 +167,28 @@ def test_oof_woe_leaks_less_than_naive_fit_on_all() -> None:
     assert np.all(naive_sign[y == 1] < 0)
     assert np.all(naive_sign[y == 0] > 0)
     assert np.allclose(oof_enc, 0.0)
-    naive_corr = float(np.corrcoef(naive_enc, y)[0, 1])
+    naive_corr = float(np.corrcoef(naive_enc, y.astype(float))[0, 1])
     assert abs(naive_corr) > 0.9
-    assert float(np.nan_to_num(np.corrcoef(oof_enc, y)[0, 1], nan=0.0)) == pytest.approx(0.0)
 
 
 def test_oof_held_out_row_does_not_use_its_own_target() -> None:
-    """Leave-one-out: two categories, each row encoded without its own label."""
-    X = _df(x=["a", "a", "a", "b", "b", "b"])
-    y = pd.Series([1, 0, 1, 0, 1, 0])
+    """Stratified leave-two-out: each row is encoded without its own label."""
+    X = _df(x=["a", "a", "a", "a", "b", "b", "b", "b"])
+    # a is event-heavy, b is non-event-heavy, so raw WoE is nonzero.
+    y = pd.Series([1, 1, 1, 0, 0, 0, 0, 1])
     enc = WoEEncoder(
-        columns=["x"], target="y", smoothing=0.0, cv=6, shuffle=False
+        columns=["x"], target="y", smoothing=0.0, cv=4, shuffle=False
     )
     out = enc.fit_transform(X, y)["x"].to_numpy()
     expected = np.zeros(len(y), dtype=float)
-    splitter = StratifiedKFold(n_splits=6, shuffle=False)
+    splitter = StratifiedKFold(n_splits=4, shuffle=False)
     n_splits = 0
     for train_idx, test_idx in splitter.split(X, y):
         n_splits += 1
         fold = WoEEncoder(columns=["x"], target="y", smoothing=0.0, cv=None)
         fold.fit(X.iloc[train_idx], y.iloc[train_idx])
         expected[test_idx] = fold.transform(X.iloc[test_idx])["x"].to_numpy()
-    assert n_splits == 6
+    assert n_splits == 4
     np.testing.assert_allclose(out, expected)
     naive = WoEEncoder(columns=["x"], target="y", smoothing=0.0, cv=None)
     naive_enc = naive.fit_transform(X, y)["x"].to_numpy()
