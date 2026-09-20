@@ -10,6 +10,7 @@ from feature_engineering_kit import (
     NumericImputer,
     StandardScaler,
     TargetEncoder,
+    WoEEncoder,
     run_churn_workflow,
 )
 from feature_engineering_kit.pipeline import build_preprocessing_pipeline
@@ -98,3 +99,47 @@ def test_preprocessing_pipeline_target_encoder_is_out_of_fold() -> None:
     assert isinstance(enc, TargetEncoder)
     assert enc.cv == 5
     assert enc.random_state == 0
+
+
+def test_preprocessing_pipeline_woe_encoder_is_out_of_fold() -> None:
+    df = pd.DataFrame(
+        {
+            "age": [20.0, 30.0, 40.0, 50.0],
+            "plan": ["a", "b", "a", "b"],
+        }
+    )
+    pipe = build_preprocessing_pipeline(
+        df, target_encode=[], woe_encode=["plan"], one_hot=[], random_state=0
+    )
+    enc = dict(pipe.steps)["woe_encode_plan"]
+    assert isinstance(enc, WoEEncoder)
+    assert enc.cv == 5
+    assert enc.random_state == 0
+
+
+def test_preprocessing_pipeline_rejects_overlapping_encoders() -> None:
+    df = pd.DataFrame({"plan": ["a", "b"], "age": [1.0, 2.0]})
+    with pytest.raises(ValueError, match="cannot be both"):
+        build_preprocessing_pipeline(
+            df, target_encode=["plan"], woe_encode=["plan"], one_hot=[]
+        )
+
+
+def test_run_churn_workflow_woe_hook_records_iv() -> None:
+    r = run_churn_workflow(
+        n_samples=600, seed=0, model="logreg", woe_encode=["region"]
+    )
+    assert r.information_values
+    cols = [name for name, _ in r.information_values]
+    assert "region" in cols
+    assert all(iv >= 0.0 for _, iv in r.information_values)
+    assert r.iv_details
+    assert {row["column"] for row in r.iv_details} == {"region"}
+    for value in (r.accuracy, r.roc_auc):
+        assert 0.0 <= value <= 1.0
+
+
+def test_run_churn_workflow_default_has_no_iv() -> None:
+    r = run_churn_workflow(n_samples=400, seed=0, model="logreg")
+    assert r.information_values == []
+    assert r.iv_details == []

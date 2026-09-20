@@ -24,7 +24,7 @@ from .data import (
     stratified_split,
 )
 from .datetime import DatetimeExtractor
-from .encoding import OneHotEncoder, TargetEncoder
+from .encoding import OneHotEncoder, TargetEncoder, WoEEncoder
 from .feature_selection import CorrelationFilter, VarianceThreshold
 from .imputation import CategoricalImputer, NumericImputer
 from .interaction import InteractionFeatures
@@ -76,6 +76,7 @@ def build_preprocessing_pipeline(
     X: pd.DataFrame,
     *,
     target_encode=None,
+    woe_encode=None,
     one_hot=None,
     poly_columns=None,
     poly_degree: int = 2,
@@ -86,6 +87,7 @@ def build_preprocessing_pipeline(
     variance_threshold: float = 0.0,
     drop_high_correlation: float | None = 0.95,
     target_encode_cv=5,
+    woe_encode_cv=5,
     random_state=None,
 ) -> FeatureEngineeringPipeline:
     """Build a standard preprocessing pipeline from a feature DataFrame.
@@ -95,14 +97,24 @@ def build_preprocessing_pipeline(
 
     Categorical columns in ``target_encode`` use K-fold out-of-fold mean
     encoding (``target_encode_cv`` folds, seeded by ``random_state``) so the
-    training matrix does not see a row's own label.
+    training matrix does not see a row's own label. Columns in ``woe_encode``
+    use out-of-fold Weight of Evidence (``woe_encode_cv`` folds) and expose
+    Information Value on the fitted encoder. A column cannot appear in both
+    ``target_encode`` and ``woe_encode``.
     """
     schema = column_schema(X, target=None)
     numeric = list(schema.numeric)
     categorical = list(schema.categorical)
     datetime = list(schema.datetime)
     target_encode = list(target_encode or [])
+    woe_encode = list(woe_encode or [])
     one_hot = list(one_hot or [])
+    overlap = sorted(set(target_encode) & set(woe_encode))
+    if overlap:
+        raise ValueError(
+            "columns cannot be both target-encoded and WoE-encoded: "
+            + ", ".join(overlap)
+        )
 
     steps: list[tuple[str, Transformer]] = []
     if numeric:
@@ -119,6 +131,18 @@ def build_preprocessing_pipeline(
                     columns=[col],
                     target=TARGET_COLUMN,
                     cv=target_encode_cv,
+                    random_state=random_state,
+                ),
+            )
+        )
+    for col in woe_encode:
+        steps.append(
+            (
+                f"woe_encode_{col}",
+                WoEEncoder(
+                    columns=[col],
+                    target=TARGET_COLUMN,
+                    cv=woe_encode_cv,
                     random_state=random_state,
                 ),
             )
@@ -200,6 +224,8 @@ class ChurnEvaluation:
     feature_importances: list[tuple[str, float]] = field(default_factory=list)
     dropped_by_variance: list[str] = field(default_factory=list)
     dropped_by_correlation: list[str] = field(default_factory=list)
+    information_values: list[tuple[str, float]] = field(default_factory=list)
+    iv_details: list[dict] = field(default_factory=list)
 
 
 def _build_model(name: str, seed: int):
@@ -259,6 +285,22 @@ def _step_drop(pipeline: FeatureEngineeringPipeline, name: str) -> list[str]:
     return list(getattr(step, "drop_", []))
 
 
+def _collect_information_values(
+    pipeline: FeatureEngineeringPipeline,
+) -> tuple[list[tuple[str, float]], list[dict]]:
+    values: list[tuple[str, float]] = []
+    details: list[dict] = []
+    for _, step in pipeline.steps:
+        iv_map = getattr(step, "iv_", None)
+        if iv_map:
+            values.extend((str(col), float(iv)) for col, iv in iv_map.items())
+        table = getattr(step, "iv_table_", None)
+        if table is not None and len(table):
+            details.extend(table.to_dict(orient="records"))
+    values.sort(key=lambda item: item[1], reverse=True)
+    return values, details
+
+
 def run_churn_workflow(
     n_samples: int = 2000,
     seed: int = 42,
@@ -266,6 +308,7 @@ def run_churn_workflow(
     model: str = "logreg",
     *,
     target_encode=None,
+    woe_encode=None,
     one_hot=None,
     poly_columns=None,
     poly_degree: int = 2,
@@ -278,8 +321,10 @@ def run_churn_workflow(
     Steps: load synthetic data -> stratified split -> feature engineering
     (``fit_transform`` on train, ``transform`` on test to prevent leakage;
     target encoding uses K-fold out-of-fold means on train and the global
-    mapping on test) -> train classifier -> evaluate -> return metrics plus a
-    baseline (numeric-only) for comparison.
+    mapping on test; optional ``woe_encode`` columns use out-of-fold Weight
+    of Evidence with Information Value recorded on the result) -> train
+    classifier -> evaluate -> return metrics plus a baseline (numeric-only)
+    for comparison.
     """
     df = load_synthetic_churn_dataset(n_samples=n_samples, seed=seed)
     train, test = stratified_split(df, test_size=test_size, seed=seed)
@@ -288,8 +333,19 @@ def run_churn_workflow(
     y_test = test[TARGET_COLUMN]
     X_test = test.drop(columns=[TARGET_COLUMN])
 
-    target_encode = list(target_encode or [COLUMN_CATEGORICAL[0]])
-    one_hot = list(one_hot or [c for c in COLUMN_CATEGORICAL if c not in target_encode])
+    woe_encode = list(woe_encode or [])
+    if target_encode is None:
+        target_encode = [c for c in [COLUMN_CATEGORICAL[0]] if c not in woe_encode]
+    else:
+        target_encode = list(target_encode)
+    one_hot = list(
+        one_hot
+        or [
+            c
+            for c in COLUMN_CATEGORICAL
+            if c not in target_encode and c not in woe_encode
+        ]
+    )
     poly_columns = list(poly_columns or ["income", "tenure"])
     interaction_pairs = list(
         interaction_pairs
@@ -300,6 +356,7 @@ def run_churn_workflow(
     pipeline = build_preprocessing_pipeline(
         X_train,
         target_encode=target_encode,
+        woe_encode=woe_encode,
         one_hot=one_hot,
         poly_columns=poly_columns,
         poly_degree=poly_degree,
@@ -340,6 +397,7 @@ def run_churn_workflow(
 
     importances = _feature_importances(estimator, list(X_train_eng.columns))
     top_features = sorted(importances, key=lambda t: abs(t[1]), reverse=True)[:10]
+    information_values, iv_details = _collect_information_values(pipeline)
 
     return ChurnEvaluation(
         seed=seed,
@@ -360,6 +418,8 @@ def run_churn_workflow(
         feature_importances=[(c, v) for c, v in top_features],
         dropped_by_variance=_step_drop(pipeline, "variance_threshold"),
         dropped_by_correlation=_step_drop(pipeline, "correlation_filter"),
+        information_values=information_values,
+        iv_details=iv_details,
     )
 
 
