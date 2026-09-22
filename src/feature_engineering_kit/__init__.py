@@ -13,8 +13,10 @@ from .data import (
 )
 from .datetime import DatetimeExtractor
 from .encoding import (
+    FrequencyEncoder,
     OneHotEncoder,
     OrdinalEncoder,
+    RareCategoryGrouper,
     TargetEncoder,
     WoEEncoder,
     information_value,
@@ -54,8 +56,10 @@ __all__ = [
     "stratified_split",
     "NumericImputer",
     "CategoricalImputer",
+    "FrequencyEncoder",
     "OneHotEncoder",
     "OrdinalEncoder",
+    "RareCategoryGrouper",
     "TargetEncoder",
     "WoEEncoder",
     "information_value",

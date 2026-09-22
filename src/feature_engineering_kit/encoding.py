@@ -1,8 +1,9 @@
 """Categorical feature encoders.
 
-Each encoder is a :class:`~feature_engineering_kit.base.Transformer` that
-replaces one or more object/string columns with numeric representations so the
-engineered frame is consumable by scikit-learn estimators.
+Each encoder is a :class:`~feature_engineering_kit.base.Transformer`.
+:class:`RareCategoryGrouper` collapses infrequent levels and stays categorical.
+The other encoders replace object/string columns with numeric representations
+so the engineered frame is consumable by scikit-learn estimators.
 """
 
 from __future__ import annotations
@@ -597,9 +598,319 @@ def information_value(
     return enc.iv_report()
 
 
+def _category_key(value):
+    """Hashable category key. Missing values collapse to ``None``."""
+    if isinstance(value, np.generic):
+        value = value.item()
+    if value is None or value is pd.NA or value is pd.NaT:
+        return None
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        return value
+    if isinstance(missing, (bool, np.bool_)) and bool(missing):
+        return None
+    return value
+
+
+def _raw_counts(series: pd.Series, *, drop_missing: bool) -> dict:
+    counts: dict = {}
+    for raw, count in series.value_counts(dropna=drop_missing).items():
+        key = _category_key(raw)
+        if key is None and drop_missing:
+            continue
+        counts[key] = counts.get(key, 0) + int(count)
+    return counts
+
+
+def _validate_min_count(min_count, *, allow_none: bool):
+    if min_count is None:
+        if allow_none:
+            return None
+        raise ValueError("min_count must be an integer >= 1")
+    if isinstance(min_count, bool):
+        raise ValueError("min_count must be an integer >= 1")
+    if isinstance(min_count, (float, np.floating)):
+        if not float(min_count).is_integer():
+            raise ValueError("min_count must be an integer >= 1")
+        min_count = int(min_count)
+    elif isinstance(min_count, (int, np.integer)):
+        min_count = int(min_count)
+    else:
+        raise ValueError("min_count must be an integer >= 1")
+    if min_count < 1:
+        raise ValueError("min_count must be an integer >= 1")
+    return min_count
+
+
+def _validate_other_label(other_label):
+    label = _category_key(other_label)
+    if label is None:
+        raise ValueError("other_label must be a non-missing value")
+    return label
+
+
+class RareCategoryGrouper(Transformer):
+    """Group infrequent categorical levels into a single bucket.
+
+    Levels whose training count is strictly below ``min_count`` are replaced
+    by ``other_label``. Levels at or above ``min_count`` are kept as they
+    appeared in the data. Categories unseen at transform time are treated as
+    rare and mapped to the same bucket. Missing values are preserved so a
+    later imputer can still see them.
+
+    The mapping is learned on ``fit`` and reused by ``transform``. A level that
+    is rare in a test fold stays rare if it was rare in training, and a level
+    that was common in training is kept even if it shows up only once at
+    transform time.
+
+    Parameters
+    ----------
+    columns:
+        Categorical columns to group. Other columns pass through unchanged.
+    min_count:
+        Minimum training count required to keep a level. Default ``2`` groups
+        singletons. Must be an integer ``>= 1``.
+    other_label:
+        Replacement label for rare and unseen levels. Default ``"other"``.
+        Must be non-missing. If that label already exists and is itself
+        frequent, rare levels are merged into it.
+    """
+
+    def __init__(self, columns, min_count=2, other_label="other"):
+        self.columns = list(columns)
+        self.min_count = _validate_min_count(min_count, allow_none=False)
+        self.other_label = _validate_other_label(other_label)
+
+    def _fit(self, X: pd.DataFrame, y=None) -> None:
+        self.counts_: dict[str, dict] = {}
+        self.kept_: dict[str, set] = {}
+        for col in self.columns:
+            if col not in X.columns:
+                raise KeyError(f"column '{col}' not found during fit")
+            counts = _raw_counts(X[col], drop_missing=True)
+            self.counts_[col] = counts
+            self.kept_[col] = {
+                key for key, count in counts.items() if count >= self.min_count
+            }
+        return None
+
+    def _transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        out = X.copy()
+        for col in self.columns:
+            if col not in out.columns:
+                raise KeyError(f"column '{col}' not found during transform")
+            kept = self.kept_[col]
+            other = self.other_label
+            replaced = []
+            for value in out[col].tolist():
+                key = _category_key(value)
+                if key is None or key in kept:
+                    replaced.append(value)
+                else:
+                    replaced.append(other)
+            out[col] = pd.Series(replaced, index=out.index, dtype=object)
+        return out
+
+
+class FrequencyEncoder(Transformer):
+    """Replace categories with their training-set frequency.
+
+    By default each level is mapped to its relative frequency ``count / n_rows``.
+    Pass ``normalize=False`` to emit raw counts instead. Unseen categories map
+    to ``0``. Missing values are their own level and encode to the missing rate
+    of the sample the mapping was fit on (``0`` when that sample had no
+    missing rows).
+
+    ``min_count`` optionally pools levels below that count into ``other_label``
+    before the frequencies are computed. Every pooled level, and any unseen
+    non-missing level, then receives the pooled bucket's frequency. When the
+    column has no missing values and ``cv is None``, that matches
+    :class:`RareCategoryGrouper` followed by a frequency encoder. Missing
+    values are not pooled into the rare bucket.
+
+    A row counted in its own frequency slightly inflates rare levels: a unique
+    id encodes to ``1/n`` only because of itself. When ``cv`` is an integer
+    ``>= 2``, ``fit_transform`` writes *out-of-fold* frequencies. Each training
+    row is encoded from the folds it does not belong to, and both the rare
+    bucket and the frequencies are recomputed inside each fold. ``transform``
+    (and ``fit`` followed by ``transform``) always uses the global mapping
+    learned from the full training set. Folds are a plain ``KFold`` because
+    frequency encoding does not use ``y``. ``cv=None`` (the default) encodes
+    with full-sample frequencies. Setting ``cv`` to the number of rows and
+    ``shuffle=False`` is leave-one-out.
+
+    Parameters
+    ----------
+    columns:
+        Categorical columns to encode. Other columns pass through unchanged.
+    normalize:
+        If True (default), encode ``count / n_rows``. If False, encode raw
+        counts.
+    min_count:
+        If set, levels with training count ``< min_count`` are pooled into
+        ``other_label`` before frequencies are computed. ``None`` (default)
+        keeps every level. Must be ``None`` or an integer ``>= 1``.
+    other_label:
+        Bucket label used when ``min_count`` is set. Default ``"other"``.
+    cv:
+        Number of folds for out-of-fold encoding during ``fit_transform``.
+        ``None`` (default) disables it. Must be ``None`` or an integer ``>= 2``.
+    shuffle:
+        Whether to shuffle rows before splitting folds. Ignored when
+        ``cv is None``.
+    random_state:
+        Seed forwarded to the fold splitter when ``shuffle`` is True.
+    """
+
+    def __init__(
+        self,
+        columns,
+        normalize=True,
+        min_count=None,
+        other_label="other",
+        cv=None,
+        shuffle=True,
+        random_state=None,
+    ):
+        self.columns = list(columns)
+        self.normalize = bool(normalize)
+        self.min_count = _validate_min_count(min_count, allow_none=True)
+        self.other_label = _validate_other_label(other_label)
+        if cv is not None:
+            cv = int(cv)
+            if cv < 2:
+                raise ValueError("cv must be None or an integer >= 2")
+        self.cv = cv
+        self.shuffle = bool(shuffle)
+        self.random_state = random_state
+
+    def _mapping_from_counts(self, counts: dict, n: int) -> tuple[dict, float]:
+        def encode(count: int) -> float:
+            if not self.normalize:
+                return float(count)
+            if n == 0:
+                return 0.0
+            return float(count) / float(n)
+
+        if self.min_count is None:
+            return {key: encode(count) for key, count in counts.items()}, 0.0
+
+        missing_count = int(counts.get(None, 0))
+        kept: dict = {}
+        rare_total = 0
+        for key, count in counts.items():
+            if key is None:
+                continue
+            if count >= self.min_count:
+                kept[key] = count
+            else:
+                rare_total += int(count)
+        if rare_total or self.other_label in kept:
+            pooled = int(kept.get(self.other_label, 0)) + int(rare_total)
+            kept[self.other_label] = pooled
+        mapping = {key: encode(count) for key, count in kept.items()}
+        if missing_count:
+            mapping[None] = encode(missing_count)
+        return mapping, float(mapping.get(self.other_label, 0.0))
+
+    def _apply_mapping(
+        self, series: pd.Series, mapping: dict, other_freq: float
+    ) -> pd.Series:
+        # Walk values explicitly so missing entries are encoded too. ``Series.map``
+        # can leave NA untouched, which would drop the fitted missing rate.
+        encoded = []
+        for value in series.tolist():
+            key = _category_key(value)
+            if key in mapping:
+                encoded.append(mapping[key])
+            elif key is None:
+                encoded.append(0.0)
+            else:
+                encoded.append(other_freq)
+        return pd.Series(encoded, index=series.index, dtype=float)
+
+    def _fit(self, X: pd.DataFrame, y=None) -> None:
+        self.n_samples_ = int(len(X))
+        self.counts_: dict[str, dict] = {}
+        self.maps_: dict[str, dict] = {}
+        self.other_frequency_: dict[str, float] = {}
+        for col in self.columns:
+            if col not in X.columns:
+                raise KeyError(f"column '{col}' not found during fit")
+            counts = _raw_counts(X[col], drop_missing=False)
+            mapping, other_freq = self._mapping_from_counts(counts, self.n_samples_)
+            self.counts_[col] = counts
+            self.maps_[col] = mapping
+            self.other_frequency_[col] = other_freq
+        return None
+
+    def _iter_oof_splits(self, n: int):
+        """Yield ``(train_idx, test_idx)`` for OOF encoding, or nothing.
+
+        Falls back to no splits (caller uses the global mapping) when the
+        sample is too small for ``cv`` folds.
+        """
+        from sklearn.model_selection import KFold
+
+        n_splits = min(int(self.cv), n)
+        if n_splits < 2:
+            return
+        kwargs: dict = {"n_splits": n_splits, "shuffle": self.shuffle}
+        if self.shuffle:
+            kwargs["random_state"] = self.random_state
+        splitter = KFold(**kwargs)
+        yield from splitter.split(np.zeros(n))
+
+    def _encode_oof(self, X: pd.DataFrame) -> pd.DataFrame:
+        X_pos = X.reset_index(drop=True)
+        n = len(X_pos)
+        oof: dict[str, np.ndarray] = {
+            col: np.zeros(n, dtype=float) for col in self.columns
+        }
+        n_folds = 0
+        for train_idx, test_idx in self._iter_oof_splits(n):
+            n_folds += 1
+            for col in self.columns:
+                train = X_pos[col].iloc[train_idx]
+                counts = _raw_counts(train, drop_missing=False)
+                mapping, other_freq = self._mapping_from_counts(counts, int(len(train)))
+                test = X_pos[col].iloc[test_idx]
+                oof[col][test_idx] = self._apply_mapping(
+                    test, mapping, other_freq
+                ).to_numpy(dtype=float)
+        out = X.copy()
+        if n_folds == 0:
+            return self._transform(out)
+        for col in self.columns:
+            out[col] = pd.Series(oof[col], index=X.index, dtype=float)
+        return out
+
+    def fit_transform(self, X: pd.DataFrame, y=None) -> pd.DataFrame:
+        self.fit(X, y)
+        if self.cv is None:
+            out = self._transform(X)
+        else:
+            out = self._encode_oof(X)
+        self.columns_out_ = list(out.columns)
+        return out
+
+    def _transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        out = X.copy()
+        for col in self.columns:
+            if col not in out.columns:
+                raise KeyError(f"column '{col}' not found during transform")
+            out[col] = self._apply_mapping(
+                out[col], self.maps_[col], self.other_frequency_[col]
+            )
+        return out
+
+
 __all__ = [
     "OneHotEncoder",
     "OrdinalEncoder",
+    "RareCategoryGrouper",
+    "FrequencyEncoder",
     "TargetEncoder",
     "WoEEncoder",
     "information_value",
