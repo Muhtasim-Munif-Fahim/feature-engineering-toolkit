@@ -4,9 +4,10 @@ Reusable feature-engineering transformers, an end-to-end ML workflow, and Markdo
 reporting for reproducible data-science projects.
 
 The toolkit ships scikit-learn-style transformers that operate on `pandas.DataFrame`
-objects (imputation, encoding including out-of-fold target and Weight of Evidence /
-Information Value, scaling, datetime extraction, polynomial/interaction
-features, and feature selection), a small workflow that loads a synthetic churn
+objects (imputation, encoding including rare-category grouping, frequency encoding,
+out-of-fold target encoding, and Weight of Evidence / Information Value, scaling,
+datetime extraction, polynomial/interaction features, and feature selection), a small
+workflow that loads a synthetic churn
 dataset, engineers features, trains a classifier, evaluates it, and writes a Markdown
 report, and a console-script entry point.
 
@@ -110,3 +111,80 @@ Optional churn-workflow hook: pass `woe_encode=["region"]` to
 WoE-encoded (not one-hot or target-encoded). The Markdown report then includes
 an Information Value section. A column cannot be both target-encoded and
 WoE-encoded. Default runs still target-encode `plan` and one-hot `region`.
+
+## Rare-category grouping
+
+`RareCategoryGrouper` collapses infrequent categorical levels before a later
+encoder (frequency, one-hot, target, or WoE). Any level whose training count is
+below `min_count` (default `2`, so singletons are grouped) is replaced with
+`other`, or a custom `other_label`. Levels at or above `min_count` are kept.
+Categories that never appeared in training are treated as rare and mapped to
+the same bucket. Missing values are left missing so a later imputer can still
+see them.
+
+Grouping is fit on the training rows only. A city that was common in training
+stays unchanged on a test row even if it appears once there.
+
+```python
+from feature_engineering_kit import RareCategoryGrouper
+
+grouper = RareCategoryGrouper(columns=["city"], min_count=20)
+X_train_g = grouper.fit_transform(X_train)
+X_test_g = grouper.transform(X_test)  # unseen cities -> "other"
+```
+
+Kept levels and training counts are stored on `kept_` and `counts_`. Use this
+before target or WoE encoding when rare levels should share one smoothed mean
+or one Weight of Evidence instead of an unstable per-level estimate.
+
+## Frequency encoding
+
+`FrequencyEncoder` replaces each category with its training-set frequency.
+By default that is the relative frequency `count / n_rows`. Pass
+`normalize=False` for raw counts. Unseen categories map to `0`. Missing values
+are their own level and encode to the missing rate of the fitted sample (`0`
+when that sample had no missing rows).
+
+`min_count` optionally pools levels below that count into `other` and assigns
+every pooled level, plus any unseen level, the pooled bucket's frequency. With
+no missing values and `cv=None`, that is the same result as
+`RareCategoryGrouper(min_count=...)` followed by `FrequencyEncoder()`.
+
+Counting a row toward its own frequency slightly inflates rare levels: a unique
+id encodes to `1/n` only because of itself. Pass `cv` (for example `cv=5`) to
+make `fit_transform` out-of-fold. Each training row is encoded from the folds
+it does not belong to, and a `min_count` bucket is recomputed inside each fold.
+`transform` always uses the global training frequencies. Folds are a plain
+`KFold` because frequency encoding does not use `y`. `cv=None` (the default)
+encodes with full-sample frequencies. Setting `cv` to the number of rows and
+`shuffle=False` is leave-one-out.
+
+```python
+from feature_engineering_kit import FrequencyEncoder
+
+enc = FrequencyEncoder(columns=["city"], min_count=20, cv=5, random_state=0)
+X_train_f = enc.fit_transform(X_train)  # out-of-fold frequencies
+X_test_f = enc.transform(X_test)         # global training frequencies
+```
+
+After `fit`, per-level training counts are on `counts_`, the global encoding
+map is on `maps_`, and the fallback frequency for unseen levels is on
+`other_frequency_` (`0` when `min_count` is not set).
+
+Both classes are normal `FeatureEngineeringPipeline` steps, so they can run
+before one-hot, target, or WoE encoding:
+
+```python
+from feature_engineering_kit import (
+    FeatureEngineeringPipeline,
+    FrequencyEncoder,
+    RareCategoryGrouper,
+)
+
+pipe = FeatureEngineeringPipeline(
+    steps=[
+        ("rare_city", RareCategoryGrouper(columns=["city"], min_count=20)),
+        ("freq_city", FrequencyEncoder(columns=["city"])),
+    ]
+)
+```
