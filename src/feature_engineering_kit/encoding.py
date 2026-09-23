@@ -3,7 +3,9 @@
 Each encoder is a :class:`~feature_engineering_kit.base.Transformer`.
 :class:`RareCategoryGrouper` collapses infrequent levels and stays categorical.
 The other encoders replace object/string columns with numeric representations
-so the engineered frame is consumable by scikit-learn estimators.
+so the engineered frame is consumable by scikit-learn estimators. Target-aware
+encoders include K-fold :class:`TargetEncoder`, leave-one-out
+:class:`LeaveOneOutEncoder`, and :class:`WoEEncoder`.
 """
 
 from __future__ import annotations
@@ -242,6 +244,157 @@ class TargetEncoder(Transformer):
             out = self._transform(X)
         else:
             out = self._encode_oof(X, target)
+        self.columns_out_ = list(out.columns)
+        return out
+
+    def _transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        out = X.copy()
+        for col in self.columns:
+            if col not in out.columns:
+                raise KeyError(f"column '{col}' not found during transform")
+            out[col] = self._apply_mapping(
+                out[col], self.maps_[col], self.global_mean_
+            )
+        return out
+
+
+class LeaveOneOutEncoder(Transformer):
+    """Leave-one-out mean target encoding with Bayesian smoothing.
+
+    For each training row, ``fit_transform`` encodes a category as the smoothed
+    mean of the target on the *other* rows with that category. The row's own
+    label is left out, so a level cannot copy ``y`` the way a fit-on-all mean
+    does.
+
+    With category count ``n_c``, category target sum ``S_c``, global target
+    mean ``m``, and smoothing weight ``a``:
+
+    ``LOO_i = (S_c - y_i + a * m) / (n_c - 1 + a)``
+
+    ``a = 0`` is the mean of the other rows in the category. A level that
+    appears once has no other row; that denominator is zero when ``a = 0``,
+    and the value falls back to ``m``. The same fallback is used for missing
+    statistics. Every unique level therefore becomes the constant ``m``, not
+    that row's label.
+
+    ``transform`` does not leave a row out. Held-out data uses the smoothed
+    means learned on the full training set — the same mapping as
+    :class:`TargetEncoder` with ``cv=None`` and the same ``smoothing``.
+    Unseen categories map to ``m``.
+
+    This is not ``TargetEncoder(cv=n_rows, shuffle=False)``. That setting is
+    only leave-one-out for a continuous target. Binary targets use stratified
+    folds, which cannot hold out one row at a time. ``LeaveOneOutEncoder``
+    always excludes the current row, including for binary ``y``.
+
+    A two-row category with ``a = 0`` swaps the two labels (each row is
+    encoded as the other row's target). Prefer :class:`TargetEncoder` with
+    ``cv >= 2`` when groups are that small and the encoded column will be
+    used to train a model.
+
+    Parameters
+    ----------
+    columns:
+        Categorical columns to encode. Other columns pass through unchanged.
+    target:
+        Name of the target column in ``y`` (when ``y`` is a DataFrame) or the
+        target values (when ``y`` is array-like / Series).
+    smoothing:
+        Shrinkage toward the global mean. ``0.0`` recovers the raw
+        leave-one-out category mean. Must be ``>= 0``. Default ``10.0``,
+        matching :class:`TargetEncoder`.
+    """
+
+    def __init__(self, columns, target, smoothing=10.0):
+        self.columns = list(columns)
+        self.target = target
+        smoothing = float(smoothing)
+        if smoothing < 0.0:
+            raise ValueError("smoothing must be >= 0")
+        self.smoothing = smoothing
+
+    def _as_target_series(self, y) -> pd.Series:
+        if y is None:
+            raise ValueError("LeaveOneOutEncoder.fit requires y")
+        return _as_target_series(y, self.target)
+
+    def _check_length(self, X: pd.DataFrame, target: pd.Series) -> None:
+        if len(target) != len(X):
+            raise ValueError(
+                "LeaveOneOutEncoder expected y to have "
+                f"{len(X)} rows, got {len(target)}"
+            )
+
+    def _smoothed_mapping(
+        self, categories: pd.Series, target: pd.Series, global_mean: float
+    ) -> dict[str, float]:
+        grouped = target.groupby(categories, sort=False)
+        means = grouped.mean()
+        counts = grouped.size()
+        smooth = (counts * means + self.smoothing * global_mean) / (
+            counts + self.smoothing
+        )
+        return {str(k): float(v) for k, v in smooth.items() if k is not None}
+
+    def _apply_mapping(
+        self, series: pd.Series, mapping: dict[str, float], default: float
+    ) -> pd.Series:
+        return (
+            series.astype(object)
+            .map(lambda v: mapping.get(str(v), default))
+            .astype(float)
+        )
+
+    def _fit(self, X: pd.DataFrame, y=None) -> None:
+        target = self._as_target_series(y)
+        self._check_length(X, target)
+        self.global_mean_ = float(target.mean())
+        self.maps_: dict[str, dict[str, float]] = {}
+        for col in self.columns:
+            if col not in X.columns:
+                raise KeyError(f"column '{col}' not found during fit")
+            categories = X[col].astype(object).reset_index(drop=True)
+            self.maps_[col] = self._smoothed_mapping(
+                categories, target, self.global_mean_
+            )
+        return None
+
+    def _loo_values(self, categories: pd.Series, target: pd.Series) -> np.ndarray:
+        """Smoothed leave-one-out means, aligned to ``categories`` by position."""
+        labels = categories.astype(object).reset_index(drop=True)
+        y = target.reset_index(drop=True).astype(float)
+        y_values = y.to_numpy(dtype=float)
+        n = len(y_values)
+        global_mean = float(self.global_mean_)
+        encoded = np.full(n, global_mean, dtype=float)
+        if n == 0:
+            return encoded
+
+        stats = pd.DataFrame({"cat": labels, "y": y_values}).groupby(
+            "cat", sort=False, dropna=True
+        )["y"].agg(sum="sum", count="size")
+        cat_sum = labels.map(stats["sum"]).to_numpy(dtype=float)
+        cat_count = labels.map(stats["count"]).to_numpy(dtype=float)
+        known = np.isfinite(cat_sum) & np.isfinite(cat_count)
+        loo_sum = cat_sum - y_values
+        loo_count = cat_count - 1.0
+        denom = loo_count + self.smoothing
+        numer = loo_sum + self.smoothing * global_mean
+        np.divide(
+            numer,
+            denom,
+            out=encoded,
+            where=known & (denom != 0.0),
+        )
+        return encoded
+
+    def fit_transform(self, X: pd.DataFrame, y=None) -> pd.DataFrame:
+        self.fit(X, y)
+        target = self._as_target_series(y)
+        out = X.copy()
+        for col in self.columns:
+            values = self._loo_values(out[col], target)
+            out[col] = pd.Series(values, index=out.index, dtype=float)
         self.columns_out_ = list(out.columns)
         return out
 
@@ -912,6 +1065,7 @@ __all__ = [
     "RareCategoryGrouper",
     "FrequencyEncoder",
     "TargetEncoder",
+    "LeaveOneOutEncoder",
     "WoEEncoder",
     "information_value",
     "iv_strength",

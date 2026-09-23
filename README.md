@@ -5,7 +5,8 @@ reporting for reproducible data-science projects.
 
 The toolkit ships scikit-learn-style transformers that operate on `pandas.DataFrame`
 objects (imputation, encoding including rare-category grouping, frequency encoding,
-out-of-fold target encoding, and Weight of Evidence / Information Value, scaling,
+out-of-fold and leave-one-out target encoding, and Weight of Evidence /
+Information Value, scaling,
 datetime extraction, polynomial/interaction features, and feature selection), a small
 workflow that loads a synthetic churn
 dataset, engineers features, trains a classifier, evaluates it, and writes a Markdown
@@ -76,6 +77,45 @@ The churn workflow target-encodes `plan` this way: `run_churn_workflow` and
 `build_preprocessing_pipeline` pass the run seed into `TargetEncoder` so fold
 assignments are reproducible, then call `fit_transform` on the train split and
 `transform` on the test split.
+
+For a strict leave-one-out mean — every other row with the same category,
+including binary targets — use `LeaveOneOutEncoder` below. Setting
+`TargetEncoder(cv=n_rows, shuffle=False)` is leave-one-out only when the
+target is continuous. Binary targets use stratified folds, which cannot hold
+out one row at a time.
+
+## Leave-one-out target encoding
+
+`LeaveOneOutEncoder` replaces each training row with a smoothed mean of the
+target on the other rows that share its category:
+
+`LOO_i = (S_c - y_i + smoothing * m) / (n_c - 1 + smoothing)`
+
+`S_c` and `n_c` are the target sum and count of category `c`, and `m` is the
+global target mean. `smoothing=0` is the mean of the other rows in the
+category. A level that appears only once has no other row, so it encodes to
+`m`. A column of unique ids therefore becomes the constant global mean. A
+fit-on-all `TargetEncoder(cv=None, smoothing=0)` on that same column copies
+`y`.
+
+`transform` does not leave a row out. Test rows use the smoothed means fit on
+the full training set, the same mapping as `TargetEncoder` with `cv=None` and
+the same `smoothing`. Unseen categories map to `m`.
+
+```python
+from feature_engineering_kit import LeaveOneOutEncoder
+
+enc = LeaveOneOutEncoder(columns=["plan"], target="churn", smoothing=10.0)
+X_train_loo = enc.fit_transform(X_train, y_train)  # other rows in the category
+X_test_loo = enc.transform(X_test)                 # full-training smoothed means
+```
+
+With `smoothing=0`, a two-row category swaps the two labels: each row is
+encoded as the other row's target. Use `TargetEncoder` with `cv >= 2` when
+groups are that small and the column will be used to train a model.
+`LeaveOneOutEncoder` is deterministic (no fold seed). It is a normal
+`FeatureEngineeringPipeline` step: `fit_transform` writes leave-one-out
+values, and a later `transform` uses the global training mapping.
 
 ## Weight of Evidence and Information Value
 
