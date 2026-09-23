@@ -14,6 +14,7 @@ from .data import (
 from .datetime import DatetimeExtractor
 from .encoding import (
     FrequencyEncoder,
+    LeaveOneOutEncoder,
     OneHotEncoder,
     OrdinalEncoder,
     RareCategoryGrouper,
@@ -57,6 +58,7 @@ __all__ = [
     "NumericImputer",
     "CategoricalImputer",
     "FrequencyEncoder",
+    "LeaveOneOutEncoder",
     "OneHotEncoder",
     "OrdinalEncoder",
     "RareCategoryGrouper",
