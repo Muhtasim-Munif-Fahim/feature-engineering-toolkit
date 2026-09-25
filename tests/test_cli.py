@@ -68,6 +68,34 @@ def test_cli_run_woe_encode_includes_iv(tmp_path: Path) -> None:
     assert "region" in text
 
 
+def test_cli_run_quantile_bin_writes_report(tmp_path: Path) -> None:
+    target = tmp_path / "binned_report.md"
+    rc = main(
+        [
+            "run",
+            "--n-samples",
+            "300",
+            "--seed",
+            "0",
+            "--model",
+            "logreg",
+            "--quantile-bin",
+            "age",
+            "--n-bins",
+            "4",
+            "--bin-strategy",
+            "quantile",
+            "--bin-encode",
+            "ordinal",
+            "-o",
+            str(target),
+        ]
+    )
+    assert rc == 0
+    text = target.read_text(encoding="utf-8")
+    assert "## Evaluation" in text
+
+
 def test_cli_run_invalid_model_exits_nonzero() -> None:
     with pytest.raises(SystemExit):
         main(["run", "--n-samples", "100", "--model", "bogus"])

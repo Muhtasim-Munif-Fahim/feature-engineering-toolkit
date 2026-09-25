@@ -6,7 +6,7 @@ reporting for reproducible data-science projects.
 The toolkit ships scikit-learn-style transformers that operate on `pandas.DataFrame`
 objects (imputation, encoding including rare-category grouping, frequency encoding,
 out-of-fold and leave-one-out target encoding, and Weight of Evidence /
-Information Value, scaling,
+Information Value, quantile and uniform binning, scaling,
 datetime extraction, polynomial/interaction features, and feature selection), a small
 workflow that loads a synthetic churn
 dataset, engineers features, trains a classifier, evaluates it, and writes a Markdown
@@ -226,5 +226,55 @@ pipe = FeatureEngineeringPipeline(
         ("rare_city", RareCategoryGrouper(columns=["city"], min_count=20)),
         ("freq_city", FrequencyEncoder(columns=["city"])),
     ]
+)
+```
+
+## Quantile binning
+
+`QuantileBinning` discretizes numeric columns. The default
+`strategy="quantile"` cuts at empirical quantiles so each bin has about the
+same number of training rows (equal frequency). `strategy="uniform"` uses
+equal-width cuts between the training minimum and maximum. Edges are learned
+on `fit` and reused by `transform`, including on a held-out frame. Values
+outside the training range clip to the nearest edge bin.
+
+Duplicate quantiles (ties, sparse bins) are dropped. `n_bins_` is the number
+of bins that remain, and `bin_edges_` stores the cuts. A constant column
+becomes a single bin. `n_bins` (an integer `>= 2`) is the number of bins
+requested, not a promise that every cut survives.
+
+`encode="ordinal"` (the default) replaces each column with codes
+`0 .. n_bins_-1`. Missing values stay missing. `encode="onehot"` replaces the
+column with `{column}__bin_{i}` indicators; a missing row is all zeros.
+`inverse_transform` maps codes back to bin midpoints. An all-zero one-hot row
+inverts to missing. The inverse is the bin center, not the original value.
+
+```python
+from feature_engineering_kit import QuantileBinning
+
+binner = QuantileBinning(columns=["age", "income"], n_bins=5, strategy="quantile")
+X_train_b = binner.fit_transform(X_train)
+X_test_b = binner.transform(X_test)          # training edges
+X_mid = binner.inverse_transform(X_train_b)  # bin midpoints
+
+wide = QuantileBinning(columns=["income"], n_bins=4, strategy="uniform", encode="onehot")
+X_onehot = wide.fit_transform(X_train)
+```
+
+Pass `quantile_bin=["age"]` to `run_churn_workflow` /
+`build_preprocessing_pipeline`, or
+`feature-engineering-toolkit run --quantile-bin age --n-bins 5`. Binning runs
+after numeric imputation. Binned columns are not standardized, so ordinal
+codes stay `0 .. k-1`. One-hot binning drops the source column; the churn
+workflow then skips polynomial and interaction terms that still name it.
+Default runs do not bin.
+
+`QuantileBinning` is a normal `FeatureEngineeringPipeline` step:
+
+```python
+from feature_engineering_kit import FeatureEngineeringPipeline, QuantileBinning
+
+pipe = FeatureEngineeringPipeline(
+    steps=[("bins", QuantileBinning(columns=["age"], n_bins=4))]
 )
 ```

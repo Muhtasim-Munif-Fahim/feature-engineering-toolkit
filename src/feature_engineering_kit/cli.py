@@ -44,6 +44,31 @@ def _build_run_parser(sub):
         help="categorical columns to Weight-of-Evidence encode (optional)",
     )
     run.add_argument(
+        "--quantile-bin",
+        nargs="+",
+        default=None,
+        metavar="COLUMN",
+        help="numeric columns to discretize (optional)",
+    )
+    run.add_argument(
+        "--n-bins",
+        type=int,
+        default=5,
+        help="bins requested per discretized column (default: 5)",
+    )
+    run.add_argument(
+        "--bin-strategy",
+        choices=["quantile", "uniform"],
+        default="quantile",
+        help="equal-frequency quantile bins or equal-width uniform bins (default: quantile)",
+    )
+    run.add_argument(
+        "--bin-encode",
+        choices=["ordinal", "onehot"],
+        default="ordinal",
+        help="discretizer output: ordinal codes or one-hot indicators (default: ordinal)",
+    )
+    run.add_argument(
         "-o",
         "--output",
         default=None,
@@ -86,6 +111,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         model=args.model,
         drop_high_correlation=args.correlation_threshold,
         woe_encode=args.woe_encode,
+        quantile_bin=args.quantile_bin,
+        n_bins=args.n_bins,
+        bin_strategy=args.bin_strategy,
+        bin_encode=args.bin_encode,
     )
     report = render_markdown_report(result)
     if args.output:
