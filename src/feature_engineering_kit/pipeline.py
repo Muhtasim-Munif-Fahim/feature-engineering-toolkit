@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from .base import Transformer
+from .binning import QuantileBinning
 from .data import (
     COLUMN_CATEGORICAL,
     COLUMN_NUMERIC,
@@ -89,11 +90,16 @@ def build_preprocessing_pipeline(
     target_encode_cv=5,
     woe_encode_cv=5,
     random_state=None,
+    quantile_bin=None,
+    n_bins: int = 5,
+    bin_strategy: str = "quantile",
+    bin_encode: str = "ordinal",
 ) -> FeatureEngineeringPipeline:
     """Build a standard preprocessing pipeline from a feature DataFrame.
 
-    The pipeline imputes, encodes, extracts datetime features, scales, expands
-    polynomial/interaction features, then filters redundant columns.
+    The pipeline imputes, optionally discretizes numeric columns, encodes,
+    extracts datetime features, scales, expands polynomial/interaction
+    features, then filters redundant columns.
 
     Categorical columns in ``target_encode`` use K-fold out-of-fold mean
     encoding (``target_encode_cv`` folds, seeded by ``random_state``) so the
@@ -101,6 +107,12 @@ def build_preprocessing_pipeline(
     use out-of-fold Weight of Evidence (``woe_encode_cv`` folds) and expose
     Information Value on the fitted encoder. A column cannot appear in both
     ``target_encode`` and ``woe_encode``.
+
+    Columns in ``quantile_bin`` are discretized after numeric imputation.
+    ``bin_strategy`` is ``"quantile"`` or ``"uniform"`` and ``bin_encode`` is
+    ``"ordinal"`` or ``"onehot"``. Binned columns are left out of
+    ``StandardScaler`` so ordinal codes stay ``0 .. n_bins-1``. One-hot
+    encoding drops the source column.
     """
     schema = column_schema(X, target=None)
     numeric = list(schema.numeric)
@@ -109,6 +121,7 @@ def build_preprocessing_pipeline(
     target_encode = list(target_encode or [])
     woe_encode = list(woe_encode or [])
     one_hot = list(one_hot or [])
+    quantile_bin = list(quantile_bin or [])
     overlap = sorted(set(target_encode) & set(woe_encode))
     if overlap:
         raise ValueError(
@@ -119,6 +132,18 @@ def build_preprocessing_pipeline(
     steps: list[tuple[str, Transformer]] = []
     if numeric:
         steps.append(("impute_numeric", NumericImputer(numeric, strategy="median")))
+    if quantile_bin:
+        steps.append(
+            (
+                "quantile_bin",
+                QuantileBinning(
+                    columns=quantile_bin,
+                    n_bins=n_bins,
+                    strategy=bin_strategy,
+                    encode=bin_encode,
+                ),
+            )
+        )
     if categorical:
         steps.append(
             ("impute_categorical", CategoricalImputer(categorical, strategy="most_frequent"))
@@ -156,8 +181,11 @@ def build_preprocessing_pipeline(
                 DatetimeExtractor(column=col, drop_original=True, features=datetime_features),
             )
         )
-    if scale_numeric and numeric + target_encode:
-        steps.append(("scale", StandardScaler(columns=numeric + target_encode)))
+    scale_columns = [
+        col for col in numeric + target_encode if col not in set(quantile_bin)
+    ]
+    if scale_numeric and scale_columns:
+        steps.append(("scale", StandardScaler(columns=scale_columns)))
     if poly_columns is not None:
         steps.append(
             (
@@ -315,6 +343,10 @@ def run_churn_workflow(
     interaction_pairs=None,
     drop_high_correlation: float | None = 0.95,
     variance_threshold: float = 0.0,
+    quantile_bin=None,
+    n_bins: int = 5,
+    bin_strategy: str = "quantile",
+    bin_encode: str = "ordinal",
 ) -> ChurnEvaluation:
     """Run a reproducible churn-classification workflow end-to-end.
 
@@ -322,7 +354,8 @@ def run_churn_workflow(
     (``fit_transform`` on train, ``transform`` on test to prevent leakage;
     target encoding uses K-fold out-of-fold means on train and the global
     mapping on test; optional ``woe_encode`` columns use out-of-fold Weight
-    of Evidence with Information Value recorded on the result) -> train
+    of Evidence with Information Value recorded on the result; optional
+    ``quantile_bin`` columns are discretized after imputation) -> train
     classifier -> evaluate -> return metrics plus a baseline (numeric-only)
     for comparison.
     """
@@ -351,6 +384,17 @@ def run_churn_workflow(
         interaction_pairs
         or [("age", "tenure", "product"), ("income", "tenure", "product")]
     )
+    quantile_bin = list(quantile_bin or [])
+    # One-hot binning removes the source column. Skip expansions that still
+    # name it so the optional hook stays runnable.
+    if bin_encode == "onehot" and quantile_bin:
+        binned = set(quantile_bin)
+        poly_columns = [col for col in poly_columns if col not in binned]
+        interaction_pairs = [
+            pair
+            for pair in interaction_pairs
+            if pair[0] not in binned and pair[1] not in binned
+        ]
     datetime_features = ["hour", "dayofweek", "month", "is_weekend"]
 
     pipeline = build_preprocessing_pipeline(
@@ -365,6 +409,10 @@ def run_churn_workflow(
         variance_threshold=variance_threshold,
         drop_high_correlation=drop_high_correlation,
         random_state=seed,
+        quantile_bin=quantile_bin,
+        n_bins=n_bins,
+        bin_strategy=bin_strategy,
+        bin_encode=bin_encode,
     )
     X_train_eng = pipeline.fit_transform(X_train, y_train)
     X_test_eng = pipeline.transform(X_test)

@@ -8,6 +8,7 @@ import pytest
 from feature_engineering_kit import (
     FeatureEngineeringPipeline,
     NumericImputer,
+    QuantileBinning,
     StandardScaler,
     TargetEncoder,
     WoEEncoder,
@@ -137,6 +138,62 @@ def test_run_churn_workflow_woe_hook_records_iv() -> None:
     assert {row["column"] for row in r.iv_details} == {"region"}
     for value in (r.accuracy, r.roc_auc):
         assert 0.0 <= value <= 1.0
+
+
+def test_run_churn_workflow_quantile_bin_hook() -> None:
+    r = run_churn_workflow(
+        n_samples=400,
+        seed=0,
+        model="logreg",
+        quantile_bin=["age"],
+        n_bins=4,
+        bin_strategy="quantile",
+        bin_encode="ordinal",
+    )
+    for value in (r.accuracy, r.roc_auc):
+        assert 0.0 <= value <= 1.0
+    assert r.n_features_engineered >= 1
+
+
+def test_run_churn_workflow_onehot_bin_runs() -> None:
+    r = run_churn_workflow(
+        n_samples=400,
+        seed=0,
+        model="logreg",
+        quantile_bin=["income"],
+        n_bins=3,
+        bin_encode="onehot",
+    )
+    for value in (r.accuracy, r.roc_auc):
+        assert 0.0 <= value <= 1.0
+
+
+def test_preprocessing_pipeline_exposes_quantile_binner() -> None:
+    df = pd.DataFrame(
+        {
+            "age": [20.0, 30.0, 40.0, 50.0],
+            "plan": ["a", "b", "a", "b"],
+        }
+    )
+    pipe = build_preprocessing_pipeline(
+        df,
+        target_encode=[],
+        one_hot=[],
+        poly_columns=None,
+        interaction_pairs=None,
+        drop_high_correlation=None,
+        variance_threshold=None,
+        quantile_bin=["age"],
+        n_bins=2,
+        bin_strategy="uniform",
+        bin_encode="onehot",
+    )
+    enc = dict(pipe.steps)["quantile_bin"]
+    assert isinstance(enc, QuantileBinning)
+    assert enc.encode == "onehot"
+    out = pipe.fit_transform(df)
+    assert "age__bin_0" in out.columns
+    assert "age" not in out.columns
 
 
 def test_run_churn_workflow_default_has_no_iv() -> None:
