@@ -5,7 +5,7 @@ reporting for reproducible data-science projects.
 
 The toolkit ships scikit-learn-style transformers that operate on `pandas.DataFrame`
 objects (imputation, encoding including rare-category grouping, frequency encoding,
-out-of-fold and leave-one-out target encoding, and Weight of Evidence /
+out-of-fold, leave-one-out, and James-Stein target encoding, and Weight of Evidence /
 Information Value, quantile and uniform binning, scaling,
 datetime extraction, polynomial/interaction features, and feature selection), a small
 workflow that loads a synthetic churn
@@ -116,6 +116,34 @@ groups are that small and the column will be used to train a model.
 `LeaveOneOutEncoder` is deterministic (no fold seed). It is a normal
 `FeatureEngineeringPipeline` step: `fit_transform` writes leave-one-out
 values, and a later `transform` uses the global training mapping.
+
+
+## James-Stein target encoding
+
+`JamesSteinEncoder` replaces each category with an empirical-Bayes / James-Stein
+shrinkage of its target mean toward the global mean. Rare levels shrink harder
+than abundant ones:
+
+```text
+B_c = sigma2 / (sigma2 + n_c * tau2)
+JS_c = (1 - B_c) * m_c + B_c * m
+```
+
+`sigma2` is the pooled within-category variance of `y`; `tau2` is the positive
+part of the method-of-moments between-category variance. Unseen categories map
+to the global mean.
+
+```python
+from feature_engineering_kit import JamesSteinEncoder
+
+enc = JamesSteinEncoder(columns=["plan"], target="churn")
+X_train_js = enc.fit_transform(X_train, y_train)
+X_test_js = enc.transform(X_test)
+```
+
+`JamesSteinEncoder` is a normal `Transformer`, so it slots into
+`FeatureEngineeringPipeline` the same way as `LeaveOneOutEncoder` or
+`FrequencyEncoder`.
 
 ## Weight of Evidence and Information Value
 
