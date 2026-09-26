@@ -1184,6 +1184,179 @@ class JamesSteinEncoder(Transformer):
 
 
 
+class CatBoostEncoder(Transformer):
+    """CatBoost-style ordered / expanding target encoding with permutations.
+
+    For each training row in a random order, a category is encoded as the
+    smoothed mean of *preceding* rows that share that category (never the
+    row itself, and never future rows):
+
+    ``enc_i = (S_prev + a * m) / (n_prev + a)``
+
+    ``S_prev`` and ``n_prev`` are the running sum and count of the category
+    before position ``i`` in the permutation, ``m`` is the global target
+    mean, and ``a`` is ``smoothing``. When ``n_prev = 0`` the value is
+    ``m``. Averaging over ``n_permutations`` independent shuffles reduces
+    the variance of the online estimate and is the usual CatBoost trick for
+    cutting target leakage relative to a fit-on-all mean encoder.
+
+    ``fit`` still stores the full-sample smoothed category means (the same
+    mapping as :class:`TargetEncoder` with ``cv=None``). ``transform`` uses
+    that mapping; unseen categories map to ``m``. ``fit_transform`` writes
+    the ordered / permuted encodings for training rows.
+
+    Parameters
+    ----------
+    columns:
+        Categorical columns to encode. Other columns pass through unchanged.
+    target:
+        Name of the target column in ``y`` (when ``y`` is a DataFrame) or the
+        target values (when ``y`` is array-like / Series).
+    smoothing:
+        Prior weight ``a`` toward the global mean. Must be ``>= 0``.
+        Default ``10.0``, matching :class:`LeaveOneOutEncoder`.
+    n_permutations:
+        Number of independent random orders to average. Must be ``>= 1``.
+        Default ``1``.
+    random_state:
+        Seed for the permutation RNG. ``None`` draws fresh entropy each
+        ``fit_transform`` (ordered encodings then differ across calls).
+    """
+
+    def __init__(
+        self,
+        columns,
+        target,
+        smoothing=10.0,
+        n_permutations=1,
+        random_state=None,
+    ):
+        self.columns = list(columns)
+        self.target = target
+        smoothing = float(smoothing)
+        if smoothing < 0.0:
+            raise ValueError("smoothing must be >= 0")
+        self.smoothing = smoothing
+        if (
+            isinstance(n_permutations, bool)
+            or not isinstance(n_permutations, int)
+            or n_permutations < 1
+        ):
+            raise ValueError("n_permutations must be an integer >= 1")
+        self.n_permutations = int(n_permutations)
+        if random_state is not None and (
+            isinstance(random_state, bool) or not isinstance(random_state, int)
+        ):
+            raise ValueError("random_state must be an integer or None")
+        self.random_state = random_state
+
+    def _as_target_series(self, y) -> pd.Series:
+        if y is None:
+            raise ValueError("CatBoostEncoder.fit requires y")
+        return _as_target_series(y, self.target)
+
+    def _check_length(self, X: pd.DataFrame, target: pd.Series) -> None:
+        if len(target) != len(X):
+            raise ValueError(
+                "CatBoostEncoder expected y to have "
+                f"{len(X)} rows, got {len(target)}"
+            )
+
+    def _smoothed_mapping(
+        self, categories: pd.Series, target: pd.Series, global_mean: float
+    ) -> dict[str, float]:
+        grouped = target.groupby(categories, sort=False)
+        means = grouped.mean()
+        counts = grouped.size()
+        smooth = (counts * means + self.smoothing * global_mean) / (
+            counts + self.smoothing
+        )
+        return {str(k): float(v) for k, v in smooth.items() if k is not None}
+
+    def _apply_mapping(
+        self, series: pd.Series, mapping: dict[str, float], default: float
+    ) -> pd.Series:
+        return (
+            series.astype(object)
+            .map(lambda v: mapping.get(str(v), default))
+            .astype(float)
+        )
+
+    def _ordered_values(
+        self, categories: pd.Series, target: pd.Series, rng: np.random.Generator
+    ) -> np.ndarray:
+        """Average expanding-category means over ``n_permutations`` orders."""
+        labels = categories.astype(object).reset_index(drop=True)
+        y = target.reset_index(drop=True).astype(float).to_numpy(dtype=float)
+        n = len(y)
+        global_mean = float(self.global_mean_)
+        encoded = np.zeros(n, dtype=float)
+        if n == 0:
+            return encoded
+        a = self.smoothing
+        for _ in range(self.n_permutations):
+            order = rng.permutation(n)
+            running_sum: dict[object, float] = {}
+            running_count: dict[object, float] = {}
+            perm_enc = np.full(n, global_mean, dtype=float)
+            for pos in order:
+                cat = labels.iloc[pos]
+                if cat is None or (isinstance(cat, float) and np.isnan(cat)):
+                    perm_enc[pos] = global_mean
+                    continue
+                prev_sum = running_sum.get(cat, 0.0)
+                prev_count = running_count.get(cat, 0.0)
+                denom = prev_count + a
+                if denom == 0.0:
+                    perm_enc[pos] = global_mean
+                else:
+                    perm_enc[pos] = (prev_sum + a * global_mean) / denom
+                running_sum[cat] = prev_sum + float(y[pos])
+                running_count[cat] = prev_count + 1.0
+            encoded += perm_enc
+        encoded /= float(self.n_permutations)
+        return encoded
+
+    def _fit(self, X: pd.DataFrame, y=None) -> None:
+        target = self._as_target_series(y)
+        self._check_length(X, target)
+        if not np.all(np.isfinite(target.to_numpy(dtype=float))):
+            raise ValueError("CatBoostEncoder requires finite target values")
+        self.global_mean_ = float(target.mean())
+        self.maps_: dict[str, dict[str, float]] = {}
+        for col in self.columns:
+            if col not in X.columns:
+                raise KeyError(f"column '{col}' not found during fit")
+            categories = X[col].astype(object).reset_index(drop=True)
+            self.maps_[col] = self._smoothed_mapping(
+                categories, target, self.global_mean_
+            )
+        return None
+
+    def fit_transform(self, X: pd.DataFrame, y=None) -> pd.DataFrame:
+        self.fit(X, y)
+        target = self._as_target_series(y)
+        rng = np.random.default_rng(self.random_state)
+        out = X.copy()
+        for col in self.columns:
+            values = self._ordered_values(out[col], target, rng)
+            out[col] = pd.Series(values, index=out.index, dtype=float)
+        self.columns_out_ = list(out.columns)
+        return out
+
+    def _transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        out = X.copy()
+        for col in self.columns:
+            if col not in out.columns:
+                raise KeyError(f"column '{col}' not found during transform")
+            out[col] = self._apply_mapping(
+                out[col], self.maps_[col], self.global_mean_
+            )
+        return out
+
+
+
+
 __all__ = [
     "OneHotEncoder",
     "OrdinalEncoder",
@@ -1191,6 +1364,7 @@ __all__ = [
     "FrequencyEncoder",
     "TargetEncoder",
     "LeaveOneOutEncoder",
+    "CatBoostEncoder",
     "JamesSteinEncoder",
     "WoEEncoder",
     "information_value",
