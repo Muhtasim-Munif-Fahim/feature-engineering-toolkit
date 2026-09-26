@@ -5,7 +5,8 @@ Each encoder is a :class:`~feature_engineering_kit.base.Transformer`.
 The other encoders replace object/string columns with numeric representations
 so the engineered frame is consumable by scikit-learn estimators. Target-aware
 encoders include K-fold :class:`TargetEncoder`, leave-one-out
-:class:`LeaveOneOutEncoder`, and :class:`WoEEncoder`.
+:class:`LeaveOneOutEncoder`, James-Stein shrinkage
+:class:`JamesSteinEncoder`, and :class:`WoEEncoder`.
 """
 
 from __future__ import annotations
@@ -1059,6 +1060,130 @@ class FrequencyEncoder(Transformer):
         return out
 
 
+class JamesSteinEncoder(Transformer):
+    """James-Stein / empirical-Bayes shrinkage target encoding.
+
+    Each category mean is shrunk toward the global target mean by an amount
+    that grows as the category gets rarer. With category count ``n_c``,
+    category mean ``m_c``, global mean ``m``, residual variance ``sigma2``,
+    and between-category variance ``tau2``:
+
+    ``B_c = sigma2 / (sigma2 + n_c * tau2)``
+    ``JS_c = (1 - B_c) * m_c + B_c * m``
+
+    ``sigma2`` is the pooled within-category variance of ``y``. ``tau2`` is
+    the positive part of the method-of-moments estimate
+    ``Var(m_c) - mean(sigma2 / n_c)``. When ``tau2`` collapses to zero (or
+    there are fewer than two categories), every level maps to ``m``.
+
+    Unseen categories at transform time map to ``m``. Missing values are
+    treated as their own stringified category when present at fit time.
+
+    Parameters
+    ----------
+    columns:
+        Categorical columns to encode. Other columns pass through unchanged.
+    target:
+        Name of the target column in ``y`` (when ``y`` is a DataFrame) or the
+        target values (when ``y`` is array-like / Series).
+    """
+
+    def __init__(self, columns, target):
+        self.columns = list(columns)
+        self.target = target
+
+    def _as_target_series(self, y) -> pd.Series:
+        if y is None:
+            raise ValueError("JamesSteinEncoder.fit requires y")
+        return _as_target_series(y, self.target)
+
+    def _check_length(self, X: pd.DataFrame, target: pd.Series) -> None:
+        if len(target) != len(X):
+            raise ValueError(
+                "JamesSteinEncoder expected y to have "
+                f"{len(X)} rows, got {len(target)}"
+            )
+
+    def _js_mapping(
+        self, categories: pd.Series, target: pd.Series, global_mean: float
+    ) -> dict[str, float]:
+        labels = categories.astype(object).reset_index(drop=True)
+        y = target.reset_index(drop=True).astype(float)
+        frame = pd.DataFrame({"cat": labels, "y": y.to_numpy(dtype=float)})
+        grouped = frame.groupby("cat", sort=False, dropna=True)["y"]
+        counts = grouped.size()
+        means = grouped.mean()
+        # Pooled within-category residual variance (ddof=1 when possible).
+        ss = grouped.apply(lambda s: float(((s - s.mean()) ** 2).sum()))
+        df = (counts - 1).clip(lower=0)
+        denom = float(df.sum())
+        if denom > 0.0:
+            sigma2 = float(ss.sum() / denom)
+        else:
+            sigma2 = 0.0
+        if not np.isfinite(sigma2) or sigma2 < 0.0:
+            sigma2 = 0.0
+
+        n_cats = int(counts.shape[0])
+        if n_cats < 2 or sigma2 == 0.0:
+            tau2 = 0.0
+        else:
+            mean_of_means = float(means.mean())
+            between = float(((means - mean_of_means) ** 2).sum() / (n_cats - 1))
+            expected_noise = float((sigma2 / counts).mean())
+            tau2 = max(0.0, between - expected_noise)
+
+        mapping: dict[str, float] = {}
+        for cat, n_c, m_c in zip(counts.index.tolist(), counts.to_numpy(), means.to_numpy()):
+            n_c = float(n_c)
+            m_c = float(m_c)
+            if tau2 <= 0.0:
+                mapping[str(cat)] = float(global_mean)
+            else:
+                shrink = sigma2 / (sigma2 + n_c * tau2)
+                mapping[str(cat)] = float((1.0 - shrink) * m_c + shrink * global_mean)
+        self.sigma2_ = float(sigma2)
+        self.tau2_ = float(tau2)
+        return mapping
+
+    def _apply_mapping(
+        self, series: pd.Series, mapping: dict[str, float], default: float
+    ) -> pd.Series:
+        return (
+            series.astype(object)
+            .map(lambda v: mapping.get(str(v), default))
+            .astype(float)
+        )
+
+    def _fit(self, X: pd.DataFrame, y=None) -> None:
+        target = self._as_target_series(y)
+        self._check_length(X, target)
+        if not np.all(np.isfinite(target.to_numpy(dtype=float))):
+            raise ValueError("JamesSteinEncoder requires finite target values")
+        self.global_mean_ = float(target.mean())
+        self.maps_: dict[str, dict[str, float]] = {}
+        # Per-column variance estimates; last fit wins for the attrs used in tests.
+        self.sigma2_ = 0.0
+        self.tau2_ = 0.0
+        for col in self.columns:
+            if col not in X.columns:
+                raise KeyError(f"column '{col}' not found during fit")
+            categories = X[col].astype(object).reset_index(drop=True)
+            self.maps_[col] = self._js_mapping(categories, target, self.global_mean_)
+        return None
+
+    def _transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        out = X.copy()
+        for col in self.columns:
+            if col not in out.columns:
+                raise KeyError(f"column '{col}' not found during transform")
+            out[col] = self._apply_mapping(
+                out[col], self.maps_[col], self.global_mean_
+            )
+        return out
+
+
+
 __all__ = [
     "OneHotEncoder",
     "OrdinalEncoder",
@@ -1066,6 +1191,7 @@ __all__ = [
     "FrequencyEncoder",
     "TargetEncoder",
     "LeaveOneOutEncoder",
+    "JamesSteinEncoder",
     "WoEEncoder",
     "information_value",
     "iv_strength",

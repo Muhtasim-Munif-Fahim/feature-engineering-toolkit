@@ -15,6 +15,7 @@ from .data import (
 from .datetime import DatetimeExtractor
 from .encoding import (
     FrequencyEncoder,
+    JamesSteinEncoder,
     LeaveOneOutEncoder,
     OneHotEncoder,
     OrdinalEncoder,
@@ -60,6 +61,7 @@ __all__ = [
     "NumericImputer",
     "CategoricalImputer",
     "FrequencyEncoder",
+    "JamesSteinEncoder",
     "LeaveOneOutEncoder",
     "OneHotEncoder",
     "OrdinalEncoder",
