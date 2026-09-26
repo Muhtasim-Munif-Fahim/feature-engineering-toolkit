@@ -14,6 +14,7 @@ from .data import (
 )
 from .datetime import DatetimeExtractor
 from .encoding import (
+    CatBoostEncoder,
     FrequencyEncoder,
     JamesSteinEncoder,
     LeaveOneOutEncoder,
@@ -60,6 +61,7 @@ __all__ = [
     "stratified_split",
     "NumericImputer",
     "CategoricalImputer",
+    "CatBoostEncoder",
     "FrequencyEncoder",
     "JamesSteinEncoder",
     "LeaveOneOutEncoder",

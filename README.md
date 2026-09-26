@@ -5,7 +5,7 @@ reporting for reproducible data-science projects.
 
 The toolkit ships scikit-learn-style transformers that operate on `pandas.DataFrame`
 objects (imputation, encoding including rare-category grouping, frequency encoding,
-out-of-fold, leave-one-out, and James-Stein target encoding, and Weight of Evidence /
+out-of-fold, leave-one-out, CatBoost-style ordered, and James-Stein target encoding, and Weight of Evidence /
 Information Value, quantile and uniform binning, scaling,
 datetime extraction, polynomial/interaction features, and feature selection), a small
 workflow that loads a synthetic churn
@@ -117,6 +117,40 @@ groups are that small and the column will be used to train a model.
 `FeatureEngineeringPipeline` step: `fit_transform` writes leave-one-out
 values, and a later `transform` uses the global training mapping.
 
+
+## CatBoost-style ordered target encoding
+
+`CatBoostEncoder` replaces each training row with a smoothed mean of the
+target on *preceding* rows that share its category in a random order
+(Prokhorenkova et al., NeurIPS 2018). With running sum `S_prev`, count
+`n_prev`, global mean `m`, and smoothing weight `a`:
+
+`enc_i = (S_prev + a * m) / (n_prev + a)`
+
+When `n_prev = 0` the value is `m`, so a column of unique ids becomes the
+constant global mean instead of copying `y`. Averaging over
+`n_permutations` independent shuffles reduces the variance of the online
+estimate. `transform` uses the full-training smoothed means (the same
+mapping as `TargetEncoder(cv=None)` with the same `smoothing`); unseen
+categories map to `m`.
+
+```python
+from feature_engineering_kit import CatBoostEncoder
+
+enc = CatBoostEncoder(
+    columns=["plan"],
+    target="churn",
+    smoothing=10.0,
+    n_permutations=5,
+    random_state=0,
+)
+X_train_cb = enc.fit_transform(X_train, y_train)  # ordered / permuted encodings
+X_test_cb = enc.transform(X_test)                 # full-training smoothed means
+```
+
+`CatBoostEncoder` is a normal `Transformer`, so it slots into
+`FeatureEngineeringPipeline` the same way as `LeaveOneOutEncoder` or
+`JamesSteinEncoder`.
 
 ## James-Stein target encoding
 
