@@ -43,7 +43,7 @@ from .pipeline import (
 )
 from .polynomial import PolynomialFeatures
 from .reporting import render_markdown_report, save_report
-from .scaling import MinMaxScaler, RobustScaler, StandardScaler
+from .scaling import MinMaxScaler, RobustScaler, StandardScaler, YeoJohnsonScaler
 
 __version__ = "0.1.0"
 
@@ -75,6 +75,7 @@ __all__ = [
     "StandardScaler",
     "MinMaxScaler",
     "RobustScaler",
+    "YeoJohnsonScaler",
     "DatetimeExtractor",
     "PolynomialFeatures",
     "InteractionFeatures",
