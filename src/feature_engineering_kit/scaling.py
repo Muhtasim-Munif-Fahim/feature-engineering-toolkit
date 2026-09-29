@@ -2,8 +2,8 @@
 
 Each scaler is column-wise and stores per-column statistics at ``fit`` time so
 that the same statistics can be applied to a held-out/test frame at ``transform``
-time, preventing leakage. ``YeoJohnsonScaler`` additionally estimates a power
-parameter per column before (optionally) standardising.
+time, preventing leakage. ``YeoJohnsonScaler`` and ``BoxCoxScaler`` additionally
+estimate a power parameter per column before (optionally) standardising.
 """
 
 from __future__ import annotations
@@ -234,4 +234,115 @@ class YeoJohnsonScaler(Transformer):
         return out
 
 
-__all__ = ["StandardScaler", "MinMaxScaler", "RobustScaler", "YeoJohnsonScaler"]
+
+
+def _box_cox_transform(x: np.ndarray, lmbda: float) -> np.ndarray:
+    """Apply the Box-Cox power transform with a fixed ``lmbda`` (requires x > 0)."""
+    x = np.asarray(x, dtype=float)
+    if abs(lmbda) < 1e-12:
+        return np.log(x)
+    return (np.power(x, lmbda) - 1.0) / lmbda
+
+
+def _box_cox_loglik(x: np.ndarray, lmbda: float) -> float:
+    """Gaussian log-likelihood of Box-Cox-transformed ``x`` (for MLE)."""
+    x = np.asarray(x, dtype=float)
+    x = x[np.isfinite(x)]
+    n = x.size
+    if n == 0:
+        return -np.inf
+    if np.any(x <= 0):
+        return -np.inf
+    y = _box_cox_transform(x, lmbda)
+    var = float(np.var(y))
+    if var <= 0 or not np.isfinite(var):
+        return -np.inf
+    # Jacobian: x^{λ-1}
+    log_jac = (lmbda - 1.0) * np.sum(np.log(x))
+    return float(-0.5 * n * np.log(2.0 * np.pi * var) - 0.5 * n + log_jac)
+
+
+class BoxCoxScaler(Transformer):
+    """Box-Cox power transform for strictly positive columns.
+
+    Unlike Yeo-Johnson, Box-Cox is only defined for ``x > 0``. For each column
+    the power parameter ``λ`` is estimated by maximising the Gaussian
+    log-likelihood of the transformed values (same objective as scikit-learn's
+    ``PowerTransformer(method="box-cox")``). After the power transform the
+    column is optionally standardised to zero mean / unit variance.
+
+    Non-positive handling
+    ---------------------
+    At ``fit`` time, every selected column must contain only finite, strictly
+    positive values among the non-missing entries; otherwise a ``ValueError``
+    is raised naming the offending column. At ``transform`` time, non-positive
+    or non-finite values become ``NaN`` in the output (documented rather than
+    silently clipped), so callers can detect them.
+
+    Parameters
+    ----------
+    columns :
+        Column names to transform.
+    standardize :
+        If ``True`` (default), subtract the post-transform mean and divide by
+        the post-transform standard deviation (``ddof=0``).
+    lmbda :
+        Optional fixed ``λ`` applied to every column. When ``None`` (default)
+        each column gets its own MLE estimate in ``[-2, 2]``.
+    """
+
+    def __init__(self, columns, standardize: bool = True, lmbda: float | None = None):
+        self.columns = list(columns)
+        self.standardize = bool(standardize)
+        self.lmbda = lmbda
+
+    def _fit(self, X: pd.DataFrame, y=None) -> None:
+        self.lambdas_: dict[str, float] = {}
+        self.mean_: dict[str, float] = {}
+        self.scale_: dict[str, float] = {}
+        for col in self.columns:
+            s = _to_float(X[col])
+            values = s.to_numpy(dtype=float)
+            finite = values[np.isfinite(values)]
+            if finite.size == 0:
+                raise ValueError(
+                    f"BoxCoxScaler column {col!r} has no finite values to fit"
+                )
+            if np.any(finite <= 0):
+                raise ValueError(
+                    f"BoxCoxScaler requires strictly positive values; "
+                    f"column {col!r} has non-positive entries"
+                )
+            if self.lmbda is not None:
+                lam = float(self.lmbda)
+            elif finite.size < 2 or float(np.nanstd(finite)) == 0.0:
+                lam = 1.0  # identity when there is nothing to estimate
+            else:
+                lam = _brent_maximize(lambda L: _box_cox_loglik(finite, L), -2.0, 2.0)
+            self.lambdas_[col] = lam
+            transformed = _box_cox_transform(finite, lam)
+            mu = float(np.mean(transformed)) if transformed.size else 0.0
+            sigma = float(np.std(transformed)) if transformed.size else 1.0
+            if sigma <= 0 or not np.isfinite(sigma):
+                sigma = 1.0
+            self.mean_[col] = mu
+            self.scale_[col] = sigma
+        return None
+
+    def _transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        out = X.copy()
+        for col in self.columns:
+            if col not in out.columns:
+                continue
+            values = _to_float(out[col]).to_numpy(dtype=float)
+            transformed = np.full(values.shape, np.nan, dtype=float)
+            valid = np.isfinite(values) & (values > 0)
+            if np.any(valid):
+                transformed[valid] = _box_cox_transform(values[valid], self.lambdas_[col])
+            if self.standardize:
+                transformed = (transformed - self.mean_[col]) / self.scale_[col]
+            out[col] = transformed
+        return out
+
+
+__all__ = ["StandardScaler", "MinMaxScaler", "RobustScaler", "YeoJohnsonScaler", "BoxCoxScaler"]

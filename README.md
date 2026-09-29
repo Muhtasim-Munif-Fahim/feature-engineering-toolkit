@@ -6,7 +6,7 @@ reporting for reproducible data-science projects.
 The toolkit ships scikit-learn-style transformers that operate on `pandas.DataFrame`
 objects (imputation, encoding including rare-category grouping, frequency encoding,
 out-of-fold, leave-one-out, CatBoost-style ordered, and James-Stein target encoding, and Weight of Evidence /
-Information Value, quantile and uniform binning, scaling (including Yeo-Johnson),
+Information Value, quantile and uniform binning, scaling (including Yeo-Johnson and Box-Cox),
 datetime extraction, polynomial/interaction features, and feature selection), a small
 workflow that loads a synthetic churn
 dataset, engineers features, trains a classifier, evaluates it, and writes a Markdown
@@ -64,6 +64,26 @@ from feature_engineering_kit import YeoJohnsonScaler
 scaler = YeoJohnsonScaler(columns=["tenure", "monthly_charges"])
 X_train = scaler.fit_transform(X_train)
 X_test = scaler.transform(X_test)  # reuses fit-time λ / mean / scale
+```
+
+
+## Box-Cox power transform
+
+`BoxCoxScaler` applies the classic Box-Cox power transform to **strictly
+positive** columns and optionally standardises each column. λ is estimated per
+column by maximising the Gaussian log-likelihood of the transformed values;
+pass `lmbda=` to fix it instead.
+
+Non-positive handling: `fit` raises `ValueError` if any selected column has a
+non-positive finite value. At `transform` time non-positive or non-finite
+entries become `NaN` (they are not clipped).
+
+```python
+from feature_engineering_kit import BoxCoxScaler
+
+scaler = BoxCoxScaler(columns=["tenure", "monthly_charges"])
+X_train = scaler.fit_transform(X_train)   # requires x > 0
+X_test = scaler.transform(X_test)         # reuses fit-time λ / mean / scale
 ```
 
 ## Out-of-fold target encoding
