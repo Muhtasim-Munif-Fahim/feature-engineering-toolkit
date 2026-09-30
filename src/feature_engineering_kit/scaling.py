@@ -79,6 +79,46 @@ class MinMaxScaler(Transformer):
         return out
 
 
+
+class MaxAbsScaler(Transformer):
+    """Scale each column by its maximum absolute value into ``[-1, 1]``.
+
+    For every selected column the fit-time statistic is
+    ``max_abs = max(|x|)`` over finite values. Transform divides by that
+    scale (or ``1.0`` when the column is all zeros / empty), so the
+    training values land in ``[-1, 1]`` and the origin is preserved —
+    useful for sparse / already-centered data where shifting would densify.
+
+    Parameters
+    ----------
+    columns :
+        Column names to scale.
+    """
+
+    def __init__(self, columns):
+        self.columns = list(columns)
+
+    def _fit(self, X: pd.DataFrame, y=None) -> None:
+        self.scale_: dict[str, float] = {}
+        for col in self.columns:
+            s = _to_float(X[col])
+            values = s.to_numpy(dtype=float)
+            finite = values[np.isfinite(values)]
+            if finite.size == 0:
+                max_abs = 1.0
+            else:
+                max_abs = float(np.max(np.abs(finite)))
+            self.scale_[col] = max_abs if max_abs > 0 else 1.0
+        return None
+
+    def _transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        out = X.copy()
+        for col in self.columns:
+            if col in out.columns:
+                out[col] = _to_float(out[col]) / self.scale_[col]
+        return out
+
+
 class RobustScaler(Transformer):
     """Scale columns by median and inter-quartile range (robust to outliers)."""
 
@@ -345,4 +385,4 @@ class BoxCoxScaler(Transformer):
         return out
 
 
-__all__ = ["StandardScaler", "MinMaxScaler", "RobustScaler", "YeoJohnsonScaler", "BoxCoxScaler"]
+__all__ = ["StandardScaler", "MinMaxScaler", "MaxAbsScaler", "RobustScaler", "YeoJohnsonScaler", "BoxCoxScaler"]
