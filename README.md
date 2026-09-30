@@ -6,7 +6,7 @@ reporting for reproducible data-science projects.
 The toolkit ships scikit-learn-style transformers that operate on `pandas.DataFrame`
 objects (imputation, encoding including rare-category grouping, frequency encoding,
 out-of-fold, leave-one-out, CatBoost-style ordered, and James-Stein target encoding, and Weight of Evidence /
-Information Value, quantile and uniform binning, scaling (including Yeo-Johnson and Box-Cox),
+Information Value, quantile and uniform binning, scaling (including MaxAbs, Yeo-Johnson and Box-Cox),
 datetime extraction, polynomial/interaction features, and feature selection), a small
 workflow that loads a synthetic churn
 dataset, engineers features, trains a classifier, evaluates it, and writes a Markdown
@@ -85,6 +85,20 @@ scaler = BoxCoxScaler(columns=["tenure", "monthly_charges"])
 X_train = scaler.fit_transform(X_train)   # requires x > 0
 X_test = scaler.transform(X_test)         # reuses fit-time λ / mean / scale
 ```
+
+## MaxAbs scaling
+
+`MaxAbsScaler` divides each column by its maximum absolute value so training
+values land in `[-1, 1]` without shifting the origin (handy for sparse data).
+
+```python
+from feature_engineering_kit import MaxAbsScaler
+
+scaler = MaxAbsScaler(columns=["tenure", "monthly_charges"])
+X_train = scaler.fit_transform(X_train)
+X_test = scaler.transform(X_test)  # reuses fit-time max abs
+```
+
 
 ## Out-of-fold target encoding
 

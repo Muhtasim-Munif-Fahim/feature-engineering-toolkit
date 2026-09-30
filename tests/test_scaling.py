@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from feature_engineering_kit import MinMaxScaler, RobustScaler, StandardScaler
+from feature_engineering_kit import MaxAbsScaler, MinMaxScaler, RobustScaler, StandardScaler
 
 
 def _df(a=(-2.0, 0.0, 2.0, 100.0)):
@@ -55,3 +55,47 @@ def test_transform_without_fit_raises() -> None:
     scaler = StandardScaler(columns=["a"])
     with pytest.raises(RuntimeError, match="not fitted"):
         scaler.transform(_df())
+
+
+
+def test_maxabs_scaler_into_unit_abs_range() -> None:
+    df = _df(a=(-2.0, 0.0, 2.0, 4.0))
+    out = MaxAbsScaler(columns=["a"]).fit_transform(df)
+    assert out["a"].min() == pytest.approx(-0.5, abs=1e-9)
+    assert out["a"].max() == pytest.approx(1.0, abs=1e-9)
+    assert abs(out["a"]).max() == pytest.approx(1.0, abs=1e-9)
+
+
+def test_maxabs_preserves_zero_and_sign() -> None:
+    df = pd.DataFrame({"a": [-4.0, 0.0, 2.0]})
+    out = MaxAbsScaler(columns=["a"]).fit_transform(df)
+    assert out["a"].tolist() == pytest.approx([-1.0, 0.0, 0.5], abs=1e-9)
+
+
+def test_maxabs_statistics_reuse_on_test_frame() -> None:
+    train = _df(a=(-2.0, 0.0, 2.0, 4.0))
+    test = _df(a=(8.0, -4.0))
+    scaler = MaxAbsScaler(columns=["a"]).fit(train)
+    out = scaler.transform(test)
+    # train max abs = 4
+    assert scaler.scale_["a"] == pytest.approx(4.0)
+    assert out["a"].tolist() == pytest.approx([2.0, -1.0], abs=1e-9)
+
+
+def test_maxabs_constant_zero_column_is_safe() -> None:
+    df = pd.DataFrame({"a": [0.0, 0.0, 0.0]})
+    out = MaxAbsScaler(columns=["a"]).fit_transform(df)
+    assert not out["a"].isna().any()
+    assert out["a"].tolist() == [0.0, 0.0, 0.0]
+
+
+def test_maxabs_transform_without_fit_raises() -> None:
+    scaler = MaxAbsScaler(columns=["a"])
+    with pytest.raises(RuntimeError, match="not fitted"):
+        scaler.transform(_df())
+
+
+def test_maxabs_export_available() -> None:
+    from feature_engineering_kit import MaxAbsScaler as exported
+
+    assert exported is MaxAbsScaler
