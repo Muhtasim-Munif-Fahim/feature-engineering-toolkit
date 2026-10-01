@@ -99,3 +99,89 @@ def test_maxabs_export_available() -> None:
     from feature_engineering_kit import MaxAbsScaler as exported
 
     assert exported is MaxAbsScaler
+
+
+def test_quantile_transformer_uniform_range() -> None:
+    from feature_engineering_kit import QuantileTransformer
+
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame({"a": rng.normal(5, 2, size=200)})
+    out = QuantileTransformer(columns=["a"], n_quantiles=50, output_distribution="uniform").fit_transform(df)
+    assert out["a"].min() >= 0.0 - 1e-9
+    assert out["a"].max() <= 1.0 + 1e-9
+    # Roughly uniform: median near 0.5
+    assert out["a"].median() == pytest.approx(0.5, abs=0.08)
+
+
+def test_quantile_transformer_normal_approx_standard() -> None:
+    from feature_engineering_kit import QuantileTransformer
+
+    rng = np.random.default_rng(1)
+    df = pd.DataFrame({"a": rng.exponential(2.0, size=400)})
+    out = QuantileTransformer(
+        columns=["a"], n_quantiles=100, output_distribution="normal"
+    ).fit_transform(df)
+    assert abs(out["a"].mean()) < 0.25
+    assert 0.7 < out["a"].std(ddof=0) < 1.3
+
+
+def test_quantile_transformer_reuses_fit_references() -> None:
+    from feature_engineering_kit import QuantileTransformer
+
+    train = pd.DataFrame({"a": [0.0, 1.0, 2.0, 3.0, 4.0]})
+    test = pd.DataFrame({"a": [-1.0, 2.0, 5.0]})
+    scaler = QuantileTransformer(columns=["a"], n_quantiles=5, output_distribution="uniform").fit(train)
+    out = scaler.transform(test)
+    # -1 clips to lowest quantile (0); 5 clips to 1; 2 is interior
+    assert out["a"].iloc[0] == pytest.approx(0.0, abs=1e-9)
+    assert out["a"].iloc[2] == pytest.approx(1.0, abs=1e-9)
+    assert 0.0 < out["a"].iloc[1] < 1.0
+
+
+def test_quantile_transformer_inverse_roundtrip() -> None:
+    from feature_engineering_kit import QuantileTransformer
+
+    rng = np.random.default_rng(2)
+    df = pd.DataFrame({"a": rng.normal(0, 1, size=80), "b": rng.uniform(-3, 3, size=80)})
+    scaler = QuantileTransformer(
+        columns=["a", "b"], n_quantiles=40, output_distribution="uniform"
+    ).fit(df)
+    transformed = scaler.transform(df)
+    recovered = scaler.inverse_transform(transformed)
+    assert recovered["a"].to_numpy() == pytest.approx(df["a"].to_numpy(), abs=0.15)
+    assert recovered["b"].to_numpy() == pytest.approx(df["b"].to_numpy(), abs=0.15)
+
+
+def test_quantile_transformer_inverse_normal_roundtrip() -> None:
+    from feature_engineering_kit import QuantileTransformer
+
+    rng = np.random.default_rng(3)
+    df = pd.DataFrame({"a": rng.normal(10, 3, size=100)})
+    scaler = QuantileTransformer(
+        columns=["a"], n_quantiles=50, output_distribution="normal"
+    ).fit(df)
+    transformed = scaler.transform(df)
+    recovered = scaler.inverse_transform(transformed)
+    assert recovered["a"].to_numpy() == pytest.approx(df["a"].to_numpy(), abs=0.35)
+
+
+def test_quantile_transformer_constant_column_safe() -> None:
+    from feature_engineering_kit import QuantileTransformer
+
+    df = pd.DataFrame({"a": [3.0, 3.0, 3.0, 3.0]})
+    out = QuantileTransformer(columns=["a"], n_quantiles=4).fit_transform(df)
+    assert not out["a"].isna().any()
+
+
+def test_quantile_transformer_without_fit_raises() -> None:
+    from feature_engineering_kit import QuantileTransformer
+
+    scaler = QuantileTransformer(columns=["a"])
+    with pytest.raises(RuntimeError, match="not fitted"):
+        scaler.transform(_df())
+
+
+def test_quantile_transformer_export_available() -> None:
+    from feature_engineering_kit import QuantileTransformer as exported
+
+    assert exported.__name__ == "QuantileTransformer"
