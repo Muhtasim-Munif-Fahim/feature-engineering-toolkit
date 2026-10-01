@@ -385,4 +385,172 @@ class BoxCoxScaler(Transformer):
         return out
 
 
-__all__ = ["StandardScaler", "MinMaxScaler", "MaxAbsScaler", "RobustScaler", "YeoJohnsonScaler", "BoxCoxScaler"]
+__all__ = ["StandardScaler", "MinMaxScaler", "MaxAbsScaler", "RobustScaler", "YeoJohnsonScaler", "BoxCoxScaler", "QuantileTransformer"]
+
+
+
+def _norm_ppf(p: np.ndarray) -> np.ndarray:
+    """Inverse CDF of the standard normal (``scipy.special.ndtri``)."""
+    from scipy.special import ndtri
+
+    p = np.asarray(p, dtype=float)
+    out = np.empty_like(p, dtype=float)
+    finite = np.isfinite(p)
+    out[:] = np.nan
+    if np.any(finite):
+        # Clip away from {0,1} so ndtri stays finite
+        clipped = np.clip(p[finite], 1e-12, 1.0 - 1e-12)
+        out[finite] = ndtri(clipped)
+    return out
+
+
+def _norm_cdf(x: np.ndarray) -> np.ndarray:
+    """CDF of the standard normal (``scipy.special.ndtr``)."""
+    from scipy.special import ndtr
+
+    x = np.asarray(x, dtype=float)
+    out = np.empty_like(x, dtype=float)
+    finite = np.isfinite(x)
+    out[:] = np.nan
+    if np.any(finite):
+        out[finite] = ndtr(x[finite])
+    return out
+
+
+class QuantileTransformer(Transformer):
+    """Map each column to a uniform or normal distribution via its empirical CDF.
+
+    At ``fit`` time a grid of ``n_quantiles`` reference values is stored per
+    column (empirical quantiles of the finite training values). ``transform``
+    interpolates each value onto that CDF, yielding roughly uniform ``[0, 1]``
+    ranks; when ``output_distribution="normal"`` those ranks are mapped
+    through the inverse standard-normal CDF. ``inverse_transform`` reverses
+    the mapping (normal → uniform → original scale).
+
+    Column-wise and leakage-safe: test frames reuse the fit-time references,
+    matching the :class:`StandardScaler` / :class:`RobustScaler` /
+    :class:`MaxAbsScaler` :class:`~feature_engineering_kit.base.Transformer`
+    API (``fit`` / ``transform`` / ``fit_transform``) plus ``inverse_transform``.
+
+    Parameters
+    ----------
+    columns :
+        Column names to transform.
+    n_quantiles :
+        Number of quantiles to estimate. Clamped to ``[2, n_samples]`` at fit.
+    output_distribution :
+        ``"uniform"`` (default) or ``"normal"``.
+    subsample :
+        If the column has more than this many finite values, a random subset
+        of that size is used to estimate quantiles (``None`` disables).
+    random_state :
+        Seed for subsample draws.
+    """
+
+    def __init__(
+        self,
+        columns,
+        n_quantiles: int = 1000,
+        output_distribution: str = "uniform",
+        subsample: int | None = 100_000,
+        random_state: int | None = None,
+    ):
+        if output_distribution not in ("uniform", "normal"):
+            raise ValueError(
+                "output_distribution must be 'uniform' or 'normal', "
+                f"got {output_distribution!r}"
+            )
+        if int(n_quantiles) < 2:
+            raise ValueError("n_quantiles must be >= 2")
+        self.columns = list(columns)
+        self.n_quantiles = int(n_quantiles)
+        self.output_distribution = output_distribution
+        self.subsample = subsample
+        self.random_state = random_state
+
+    def _fit(self, X: pd.DataFrame, y=None) -> None:
+        self.references_: dict[str, np.ndarray] = {}
+        self.quantiles_: dict[str, np.ndarray] = {}
+        rng = np.random.default_rng(self.random_state)
+        for col in self.columns:
+            s = _to_float(X[col])
+            values = s.to_numpy(dtype=float)
+            finite = values[np.isfinite(values)]
+            if finite.size == 0:
+                # Degenerate: identity map around 0
+                self.references_[col] = np.array([0.0, 0.0], dtype=float)
+                self.quantiles_[col] = np.array([0.0, 1.0], dtype=float)
+                continue
+            if self.subsample is not None and finite.size > int(self.subsample):
+                finite = rng.choice(finite, size=int(self.subsample), replace=False)
+            finite = np.sort(finite)
+            n_q = int(min(self.n_quantiles, finite.size))
+            n_q = max(n_q, 2)
+            # Evenly spaced quantile probabilities in [0, 1]
+            probs = np.linspace(0.0, 1.0, n_q)
+            refs = np.quantile(finite, probs)
+            # Ensure strictly non-decreasing for interpolation; collapse ties softly
+            for i in range(1, refs.size):
+                if refs[i] < refs[i - 1]:
+                    refs[i] = refs[i - 1]
+            self.references_[col] = refs.astype(float)
+            self.quantiles_[col] = probs.astype(float)
+        return None
+
+    def _to_uniform(self, values: np.ndarray, col: str) -> np.ndarray:
+        refs = self.references_[col]
+        probs = self.quantiles_[col]
+        out = np.full(values.shape, np.nan, dtype=float)
+        finite = np.isfinite(values)
+        if not np.any(finite):
+            return out
+        # np.interp handles values outside [min, max] by clipping to endpoints
+        out[finite] = np.interp(values[finite], refs, probs)
+        return out
+
+    def _from_uniform(self, uniforms: np.ndarray, col: str) -> np.ndarray:
+        refs = self.references_[col]
+        probs = self.quantiles_[col]
+        out = np.full(uniforms.shape, np.nan, dtype=float)
+        finite = np.isfinite(uniforms)
+        if not np.any(finite):
+            return out
+        clipped = np.clip(uniforms[finite], 0.0, 1.0)
+        out[finite] = np.interp(clipped, probs, refs)
+        return out
+
+    def _transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        out = X.copy()
+        for col in self.columns:
+            if col not in out.columns:
+                continue
+            values = _to_float(out[col]).to_numpy(dtype=float)
+            uniforms = self._to_uniform(values, col)
+            if self.output_distribution == "normal":
+                # Avoid exact 0/1 which map to ±inf
+                eps = 1e-7
+                clipped = np.clip(uniforms, eps, 1.0 - eps)
+                transformed = _norm_ppf(clipped)
+                # Preserve NaNs from non-finite inputs
+                transformed[~np.isfinite(uniforms)] = np.nan
+                out[col] = transformed
+            else:
+                out[col] = uniforms
+        return out
+
+    def inverse_transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Map transformed columns back to the original scale."""
+        self._check_fitted()
+        out = X.copy()
+        for col in self.columns:
+            if col not in out.columns:
+                continue
+            values = _to_float(out[col]).to_numpy(dtype=float)
+            if self.output_distribution == "normal":
+                uniforms = _norm_cdf(values)
+            else:
+                uniforms = values
+            out[col] = self._from_uniform(uniforms, col)
+        return out
+
+
