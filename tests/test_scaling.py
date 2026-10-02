@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from feature_engineering_kit import MaxAbsScaler, MinMaxScaler, RobustScaler, StandardScaler
+from feature_engineering_kit import MaxAbsScaler, MinMaxScaler, Normalizer, RobustScaler, StandardScaler
 
 
 def _df(a=(-2.0, 0.0, 2.0, 100.0)):
@@ -185,3 +185,58 @@ def test_quantile_transformer_export_available() -> None:
     from feature_engineering_kit import QuantileTransformer as exported
 
     assert exported.__name__ == "QuantileTransformer"
+
+
+
+def test_normalizer_l2_unit_rows() -> None:
+    df = pd.DataFrame({"a": [3.0, 0.0], "b": [4.0, 0.0]})
+    out = Normalizer(columns=["a", "b"], norm="l2").fit_transform(df)
+    # first row 3-4-5 triangle → (0.6, 0.8); second row zero → unchanged
+    assert out.loc[0, "a"] == pytest.approx(0.6, abs=1e-9)
+    assert out.loc[0, "b"] == pytest.approx(0.8, abs=1e-9)
+    assert out.loc[1, "a"] == pytest.approx(0.0, abs=1e-9)
+    assert out.loc[1, "b"] == pytest.approx(0.0, abs=1e-9)
+    norms = np.sqrt(out["a"] ** 2 + out["b"] ** 2)
+    assert norms.iloc[0] == pytest.approx(1.0, abs=1e-9)
+
+
+def test_normalizer_l1() -> None:
+    df = pd.DataFrame({"a": [1.0, 2.0], "b": [1.0, 2.0]})
+    out = Normalizer(columns=["a", "b"], norm="l1").fit_transform(df)
+    assert out.loc[0].tolist() == pytest.approx([0.5, 0.5], abs=1e-9)
+    assert out.loc[1].tolist() == pytest.approx([0.5, 0.5], abs=1e-9)
+
+
+def test_normalizer_max() -> None:
+    df = pd.DataFrame({"a": [1.0, -4.0], "b": [2.0, 2.0]})
+    out = Normalizer(columns=["a", "b"], norm="max").fit_transform(df)
+    assert out.loc[0].tolist() == pytest.approx([0.5, 1.0], abs=1e-9)
+    assert out.loc[1].tolist() == pytest.approx([-1.0, 0.5], abs=1e-9)
+
+
+def test_normalizer_fit_is_noop_stores_columns() -> None:
+    train = pd.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0], "c": [9.0, 9.0]})
+    test = pd.DataFrame({"a": [3.0], "b": [4.0], "c": [1.0]})
+    scaler = Normalizer(columns=["a", "b"], norm="l2").fit(train)
+    assert scaler.columns_ == ["a", "b"]
+    out = scaler.transform(test)
+    assert out.loc[0, "a"] == pytest.approx(0.6, abs=1e-9)
+    assert out.loc[0, "b"] == pytest.approx(0.8, abs=1e-9)
+    assert out.loc[0, "c"] == pytest.approx(1.0, abs=1e-9)  # untouched
+
+
+def test_normalizer_invalid_norm() -> None:
+    with pytest.raises(ValueError, match="norm"):
+        Normalizer(columns=["a"], norm="l3")
+
+
+def test_normalizer_transform_without_fit_raises() -> None:
+    scaler = Normalizer(columns=["a", "b"])
+    with pytest.raises(RuntimeError, match="not fitted"):
+        scaler.transform(pd.DataFrame({"a": [1.0], "b": [1.0]}))
+
+
+def test_normalizer_export_available() -> None:
+    from feature_engineering_kit import Normalizer as exported
+
+    assert exported is Normalizer

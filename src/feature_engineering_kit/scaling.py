@@ -119,6 +119,64 @@ class MaxAbsScaler(Transformer):
         return out
 
 
+
+class Normalizer(Transformer):
+    """Scale each *row* to unit norm over the selected columns.
+
+    Unlike column-wise scalers, :class:`Normalizer` divides every sample by
+    its vector norm computed on ``columns``. Supported norms are ``"l1"``,
+    ``"l2"`` (default), and ``"max"`` (infinity / max absolute value).
+    ``fit`` stores the column list only (no statistics); zero-norm rows are
+    left unchanged at transform time.
+
+    Parameters
+    ----------
+    columns :
+        Column names that form the feature vector for each row.
+    norm :
+        One of ``"l1"``, ``"l2"``, or ``"max"``.
+    """
+
+    def __init__(self, columns, norm: str = "l2"):
+        if norm not in {"l1", "l2", "max"}:
+            raise ValueError("norm must be one of {'l1', 'l2', 'max'}")
+        self.columns = list(columns)
+        self.norm = norm
+
+    def _fit(self, X: pd.DataFrame, y=None) -> None:
+        # Row-wise normalizer has no column statistics to learn; store the
+        # column order so transform can rebuild the same feature matrix.
+        self.columns_ = list(self.columns)
+        self.norm_ = self.norm
+        return None
+
+    def _row_norms(self, values: np.ndarray) -> np.ndarray:
+        if self.norm_ == "l1":
+            norms = np.nansum(np.abs(values), axis=1)
+        elif self.norm_ == "l2":
+            norms = np.sqrt(np.nansum(np.square(values), axis=1))
+        else:  # max
+            norms = np.nanmax(np.abs(values), axis=1)
+        norms = np.asarray(norms, dtype=float)
+        norms[~np.isfinite(norms)] = 0.0
+        return norms
+
+    def _transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        out = X.copy()
+        cols = [c for c in self.columns_ if c in out.columns]
+        if not cols:
+            return out
+        mat = out[cols].apply(_to_float).to_numpy(dtype=float)
+        norms = self._row_norms(mat)
+        # Avoid divide-by-zero: leave zero-norm rows unchanged
+        safe = norms.copy()
+        safe[safe == 0.0] = 1.0
+        scaled = mat / safe[:, None]
+        for j, col in enumerate(cols):
+            out[col] = scaled[:, j]
+        return out
+
+
 class RobustScaler(Transformer):
     """Scale columns by median and inter-quartile range (robust to outliers)."""
 
