@@ -1,4 +1,9 @@
-"""Command-line interface for feature_engineering_kit."""
+"""Command-line interface for feature_engineering_kit.
+
+The library exposes row-wise :class:`~feature_engineering_kit.Normalizer`
+alongside column scalers; the CLI drives the churn workflow which uses
+the shared preprocessing pipeline.
+"""
 
 from __future__ import annotations
 
