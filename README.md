@@ -6,7 +6,7 @@ reporting for reproducible data-science projects.
 The toolkit ships scikit-learn-style transformers that operate on `pandas.DataFrame`
 objects (imputation, encoding including rare-category grouping, frequency encoding,
 out-of-fold, leave-one-out, CatBoost-style ordered, and James-Stein target encoding, and Weight of Evidence /
-Information Value, quantile and uniform binning, scaling (including MaxAbs, Normalizer, QuantileTransformer, Yeo-Johnson and Box-Cox),
+Information Value, quantile and uniform binning, scaling (including MaxAbs, Normalizer, Winsorizer, QuantileTransformer, Yeo-Johnson and Box-Cox),
 datetime extraction, polynomial/interaction features, and feature selection), a small
 workflow that loads a synthetic churn
 dataset, engineers features, trains a classifier, evaluates it, and writes a Markdown
@@ -113,6 +113,21 @@ from feature_engineering_kit import Normalizer
 scaler = Normalizer(columns=["tenure", "monthly_charges"], norm="l2")
 X_train = scaler.fit_transform(X_train)
 X_test = scaler.transform(X_test)
+```
+
+## Winsorizer
+
+`Winsorizer` clips each selected numeric column at fitted lower/upper
+percentiles (default 5th and 95th). Fit stores per-column thresholds;
+transform clips values outside those bounds (already-clipped data is
+idempotent).
+
+```python
+from feature_engineering_kit import Winsorizer
+
+scaler = Winsorizer(columns=["tenure", "monthly_charges"], limits=(0.05, 0.95))
+X_train = scaler.fit_transform(X_train)
+X_test = scaler.transform(X_test)  # reuses fit-time percentiles
 ```
 
 ## QuantileTransformer scaling

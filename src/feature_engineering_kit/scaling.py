@@ -207,6 +207,58 @@ class RobustScaler(Transformer):
 
 
 
+
+class Winsorizer(Transformer):
+    """Clip numeric columns at lower/upper empirical percentiles (winsorize).
+
+    At ``fit`` time, each selected column's lower and upper percentile
+    thresholds are estimated from the training frame (default 5th and 95th).
+    ``transform`` clips values outside those bounds to the fitted thresholds,
+    which shrinks extreme outliers without discarding rows. Mirrors the
+    sklearn-style ``Transformer`` API used by :class:`RobustScaler` and
+    :class:`Normalizer`.
+
+    Parameters
+    ----------
+    columns :
+        Column names to winsorize.
+    limits :
+        Pair ``(lower, upper)`` of percentiles in ``[0, 1]``. ``lower`` must
+        be strictly less than ``upper``. Defaults to ``(0.05, 0.95)``.
+    """
+
+    def __init__(self, columns, limits=(0.05, 0.95)):
+        if (
+            not isinstance(limits, (tuple, list))
+            or len(limits) != 2
+        ):
+            raise ValueError("limits must be a (lower, upper) pair")
+        lo, hi = float(limits[0]), float(limits[1])
+        if not (0.0 <= lo < hi <= 1.0):
+            raise ValueError("limits must satisfy 0 <= lower < upper <= 1")
+        self.columns = list(columns)
+        self.limits = (lo, hi)
+
+    def _fit(self, X: pd.DataFrame, y=None) -> None:
+        self.lower_: dict[str, float] = {}
+        self.upper_: dict[str, float] = {}
+        lo_q, hi_q = self.limits
+        for col in self.columns:
+            s = _to_float(X[col])
+            self.lower_[col] = float(s.quantile(lo_q))
+            self.upper_[col] = float(s.quantile(hi_q))
+        return None
+
+    def _transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        out = X.copy()
+        for col in self.columns:
+            if col in out.columns:
+                out[col] = _to_float(out[col]).clip(
+                    lower=self.lower_[col], upper=self.upper_[col]
+                )
+        return out
+
+
 def _yeo_johnson_transform(x: np.ndarray, lmbda: float) -> np.ndarray:
     """Apply the Yeo-Johnson power transform with a fixed ``lmbda``."""
     x = np.asarray(x, dtype=float)
@@ -443,7 +495,7 @@ class BoxCoxScaler(Transformer):
         return out
 
 
-__all__ = ["StandardScaler", "MinMaxScaler", "MaxAbsScaler", "RobustScaler", "YeoJohnsonScaler", "BoxCoxScaler", "QuantileTransformer"]
+__all__ = ["StandardScaler", "MinMaxScaler", "MaxAbsScaler", "Normalizer", "RobustScaler", "Winsorizer", "YeoJohnsonScaler", "BoxCoxScaler", "QuantileTransformer"]
 
 
 
