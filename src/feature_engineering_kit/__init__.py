@@ -44,6 +44,7 @@ from .pipeline import (
 from .polynomial import PolynomialFeatures
 from .reporting import render_markdown_report, save_report
 from .scaling import BoxCoxScaler, MaxAbsScaler, MinMaxScaler, Normalizer, QuantileTransformer, RobustScaler, StandardScaler, Winsorizer, YeoJohnsonScaler
+from .splines import SplineTransformer, bspline_basis
 
 __version__ = "0.1.0"
 
@@ -83,6 +84,8 @@ __all__ = [
     "QuantileTransformer",
     "DatetimeExtractor",
     "PolynomialFeatures",
+    "SplineTransformer",
+    "bspline_basis",
     "InteractionFeatures",
     "VarianceThreshold",
     "CorrelationFilter",
