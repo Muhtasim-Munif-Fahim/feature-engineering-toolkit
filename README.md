@@ -7,7 +7,7 @@ The toolkit ships scikit-learn-style transformers that operate on `pandas.DataFr
 objects (imputation, encoding including rare-category grouping, frequency encoding,
 out-of-fold, leave-one-out, CatBoost-style ordered, and James-Stein target encoding, and Weight of Evidence /
 Information Value, quantile and uniform binning, scaling (including MaxAbs, Normalizer, Winsorizer, QuantileTransformer, Yeo-Johnson and Box-Cox),
-datetime extraction, polynomial/interaction features, and feature selection), a small
+datetime extraction, polynomial/interaction and B-spline features, and feature selection), a small
 workflow that loads a synthetic churn
 dataset, engineers features, trains a classifier, evaluates it, and writes a Markdown
 report, and a console-script entry point.
@@ -390,6 +390,32 @@ pipe = FeatureEngineeringPipeline(
     ]
 )
 ```
+
+## B-spline features
+
+`SplineTransformer` replaces each selected numeric column with
+`n_knots + degree - 1` B-spline basis columns (`x__spline_0`, ...). Knots are
+placed on `fit` (`knots="uniform"` between the training min/max, `"quantile"`
+at empirical quantiles, or an explicit increasing array) and reused by
+`transform`. Inside the training range the basis is non-negative, sums to one
+per row, and has at most `degree + 1` non-zero entries, so a linear model on
+these columns fits smooth non-monotone effects without high-degree polynomial
+blow-up.
+
+```python
+from feature_engineering_kit import SplineTransformer
+
+spl = SplineTransformer(columns=["tenure"], n_knots=6, degree=3, knots="quantile")
+X_train = spl.fit_transform(X_train)
+X_test = spl.transform(X_test)  # out-of-range values clip to the boundary
+```
+
+`extrapolation="constant"` (default) clips out-of-range values,
+`"continue"` evaluates the padded basis, and `"error"` raises. Pass
+`include_bias=False` to drop one column per feature (removes collinearity with
+an intercept) and `keep_original=True` to keep the source column. Missing
+values give `NaN` in every spline column of that row. `bspline_basis(x, knots,
+degree)` exposes the underlying Cox-de Boor evaluator.
 
 ## Quantile binning
 
