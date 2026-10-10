@@ -1,7 +1,7 @@
 """feature_engineering_kit: transformers, ML workflow, and reporting."""
 
 from .base import Transformer
-from .binning import QuantileBinning
+from .binning import MDLPBinning, QuantileBinning
 from .data import (
     COLUMN_CATEGORICAL,
     COLUMN_DATETIME,
@@ -52,6 +52,7 @@ __all__ = [
     "__version__",
     "Transformer",
     "QuantileBinning",
+    "MDLPBinning",
     "ColumnSchema",
     "TARGET_COLUMN",
     "COLUMN_NUMERIC",

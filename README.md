@@ -6,7 +6,7 @@ reporting for reproducible data-science projects.
 The toolkit ships scikit-learn-style transformers that operate on `pandas.DataFrame`
 objects (imputation, encoding including rare-category grouping, frequency encoding,
 out-of-fold, leave-one-out, CatBoost-style ordered, and James-Stein target encoding, and Weight of Evidence /
-Information Value, quantile and uniform binning, scaling (including MaxAbs, Normalizer, Winsorizer, QuantileTransformer, Yeo-Johnson and Box-Cox),
+Information Value, quantile and uniform binning, supervised MDLP (entropy) binning, scaling (including MaxAbs, Normalizer, Winsorizer, QuantileTransformer, Yeo-Johnson and Box-Cox),
 datetime extraction, polynomial/interaction and B-spline features, and feature selection), a small
 workflow that loads a synthetic churn
 dataset, engineers features, trains a classifier, evaluates it, and writes a Markdown
@@ -465,4 +465,27 @@ from feature_engineering_kit import FeatureEngineeringPipeline, QuantileBinning
 pipe = FeatureEngineeringPipeline(
     steps=[("bins", QuantileBinning(columns=["age"], n_bins=4))]
 )
+```
+
+## Supervised MDLP binning
+
+`MDLPBinning` is the Fayyad–Irani (1993) entropy discretizer. Each numeric
+column is split recursively at the boundary that best separates the target
+classes. A split is kept only if its information gain beats the Minimum
+Description Length threshold, so the number of bins is chosen by the data:
+a feature unrelated to the target stays a single bin, and a feature whose
+class mix changes sharply gets a cut at each change. It works with binary
+or multiclass targets (`fit` needs `y`). `max_bins` caps the number of bins
+and keeps the most informative cuts (segments are expanded best-first by
+entropy reduction). `min_samples_leaf` sets the smallest allowed bin.
+`cut_points_`, `bin_edges_`, `encode="ordinal"|"onehot"` and
+`inverse_transform` work as in `QuantileBinning`.
+
+```python
+from feature_engineering_kit import MDLPBinning
+
+mdlp = MDLPBinning(columns=["age", "income"], max_bins=6)
+X_train_b = mdlp.fit_transform(X_train, y_train)
+X_test_b = mdlp.transform(X_test)      # training cuts
+print(mdlp.cut_points_["age"])
 ```
