@@ -1,11 +1,15 @@
 """Numeric discretizers.
 
 :class:`QuantileBinning` is an equal-frequency (or equal-width) binning
-transformer. Bin edges are learned on ``fit`` and reused by ``transform``, so a
-held-out frame is cut with the training thresholds.
+transformer. :class:`MDLPBinning` is the supervised Fayyad-Irani entropy /
+MDL discretizer, which places cuts where the class distribution changes. Bin
+edges are learned on ``fit`` and reused by ``transform``, so a held-out frame
+is cut with the training thresholds.
 """
 
 from __future__ import annotations
+
+import heapq
 
 import numpy as np
 import pandas as pd
@@ -231,4 +235,189 @@ class QuantileBinning(Transformer):
         return out
 
 
-__all__ = ["QuantileBinning"]
+def _entropy(counts: np.ndarray) -> float:
+    total = counts.sum()
+    if total <= 0:
+        return 0.0
+    p = counts[counts > 0] / total
+    return float(-np.sum(p * np.log2(p)))
+
+
+def _mdlp_best_split(values, labels, lo, hi, n_classes, min_samples_leaf):
+    """Best entropy split of ``[lo, hi)`` if it passes the MDL test, else ``None``.
+
+    Returns ``(entropy_reduction, cut, split_index)`` where the reduction is
+    ``n * gain`` (bits saved over the whole segment).
+    """
+    n = hi - lo
+    if n < 2 or n < 2 * min_samples_leaf:
+        return None
+    seg_vals = values[lo:hi]
+    seg_lab = labels[lo:hi]
+    onehot = np.zeros((n, n_classes), dtype=float)
+    onehot[np.arange(n), seg_lab] = 1.0
+    left = np.cumsum(onehot, axis=0)[:-1]  # class counts in the first i+1 rows
+    total = left[-1] + onehot[-1]
+    right = total - left
+    sizes = np.arange(1, n, dtype=float)
+    # candidate boundaries: only between distinct consecutive values
+    valid = seg_vals[1:] > seg_vals[:-1]
+    valid &= (sizes >= min_samples_leaf) & (n - sizes >= min_samples_leaf)
+    if not valid.any():
+        return None
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pl = left / sizes[:, None]
+        pr = right / (n - sizes)[:, None]
+        hl = -np.sum(np.where(pl > 0, pl * np.log2(np.where(pl > 0, pl, 1.0)), 0.0), axis=1)
+        hr = -np.sum(np.where(pr > 0, pr * np.log2(np.where(pr > 0, pr, 1.0)), 0.0), axis=1)
+    weighted = (sizes * hl + (n - sizes) * hr) / n
+    weighted[~valid] = np.inf
+    best = int(np.argmin(weighted))
+    ent_s = _entropy(total)
+    gain = ent_s - float(weighted[best])
+    k = int(np.count_nonzero(total))
+    k1 = int(np.count_nonzero(left[best]))
+    k2 = int(np.count_nonzero(right[best]))
+    delta = np.log2(3.0**k - 2.0) - (
+        k * ent_s - k1 * _entropy(left[best]) - k2 * _entropy(right[best])
+    )
+    threshold = (np.log2(n - 1.0) + delta) / n
+    if not gain > threshold:
+        return None
+    cut = 0.5 * (float(seg_vals[best]) + float(seg_vals[best + 1]))
+    return n * gain, cut, lo + best + 1
+
+
+def _mdlp_cuts(
+    values: np.ndarray,
+    labels: np.ndarray,
+    n_classes: int,
+    min_samples_leaf: int,
+    max_cuts: int | None = None,
+) -> list[float]:
+    """Fayyad-Irani (1993) recursive entropy splits with the MDL stop rule.
+
+    ``values`` must be sorted ascending and ``labels`` integer-coded in the
+    same order. Segments are expanded best-first (largest entropy reduction),
+    so ``max_cuts`` keeps the most informative cuts. Without a cap the result
+    equals the classic depth-first recursion. Returns sorted cut points.
+    """
+    cuts: list[float] = []
+    heap: list[tuple[float, int, float, int, int, int]] = []
+    counter = 0
+
+    def push(lo: int, hi: int) -> None:
+        nonlocal counter
+        found = _mdlp_best_split(values, labels, lo, hi, n_classes, min_samples_leaf)
+        if found is not None:
+            reduction, cut, split = found
+            heapq.heappush(heap, (-reduction, counter, cut, split, lo, hi))
+            counter += 1
+
+    push(0, values.size)
+    while heap and (max_cuts is None or len(cuts) < max_cuts):
+        _, _, cut, split, lo, hi = heapq.heappop(heap)
+        cuts.append(cut)
+        push(lo, split)
+        push(split, hi)
+    return sorted(cuts)
+
+
+class MDLPBinning(QuantileBinning):
+    """Supervised entropy-based discretization (Fayyad & Irani, 1993).
+
+    Each numeric column is split recursively at the boundary that minimizes
+    the class-weighted entropy of the target. A split is kept only if its
+    information gain exceeds the Minimum Description Length threshold
+
+    ``Gain > (log2(N - 1) + log2(3^k - 2) - [k Ent(S) - k1 Ent(S1) - k2 Ent(S2)]) / N``
+
+    where ``k``, ``k1`` and ``k2`` count the classes present in the parent and
+    the two children. Unlike :class:`QuantileBinning` the number of bins is
+    data-driven. A feature unrelated to the target typically stays a single
+    bin, while a feature with sharp class changes gets a cut at each change.
+
+    ``fit`` requires ``y`` (any discrete target: binary or multiclass labels).
+    Rows whose feature value is missing are ignored when learning cuts.
+    ``transform``, ``encode`` and ``inverse_transform`` behave exactly as in
+    :class:`QuantileBinning`; ``cut_points_`` stores the interior cuts.
+
+    Parameters
+    ----------
+    columns:
+        Numeric columns to discretize. Other columns pass through unchanged.
+    target:
+        Name of the target column when ``y`` is a DataFrame.
+    encode:
+        ``"ordinal"`` (default) or ``"onehot"``.
+    max_bins:
+        Optional cap on the number of bins per column. Segments are split
+        best-first by entropy reduction, so the most informative cuts are kept.
+    min_samples_leaf:
+        Minimum rows on each side of a cut (default ``1``, the classic MDLP).
+    """
+
+    def __init__(self, columns, target=None, encode="ordinal", max_bins=None, min_samples_leaf=1):
+        self.columns = list(columns)
+        self.target = target
+        self.encode = _validate_choice(encode, _ENCODINGS, "encode")
+        if max_bins is not None:
+            max_bins = _validate_n_bins(max_bins)
+        self.max_bins = max_bins
+        if (
+            isinstance(min_samples_leaf, bool)
+            or not isinstance(min_samples_leaf, (int, np.integer))
+            or min_samples_leaf < 1
+        ):
+            raise ValueError("min_samples_leaf must be an integer >= 1")
+        self.min_samples_leaf = int(min_samples_leaf)
+        self.strategy = "mdlp"
+        self.n_bins = max_bins
+
+    def _target(self, y, n_rows: int) -> np.ndarray:
+        if y is None:
+            raise ValueError("MDLPBinning.fit requires y")
+        if isinstance(y, pd.DataFrame):
+            if self.target is None or self.target not in y.columns:
+                raise KeyError("target column not found in y")
+            series = y[self.target]
+        elif isinstance(y, pd.Series):
+            series = y
+        else:
+            series = pd.Series(np.asarray(y).ravel())
+        if len(series) != n_rows:
+            raise ValueError("X and y must have the same number of rows")
+        if series.isna().any():
+            raise ValueError("y must not contain missing values")
+        _, codes = np.unique(series.to_numpy(), return_inverse=True)
+        return codes.astype(int)
+
+    def _fit(self, X: pd.DataFrame, y=None) -> None:
+        labels_all = self._target(y, len(X))
+        n_classes = int(labels_all.max()) + 1
+        self.bin_edges_ = {}
+        self.n_bins_ = {}
+        self.cut_points_: dict[str, list[float]] = {}
+        for col in self.columns:
+            if col not in X.columns:
+                raise KeyError(f"column '{col}' not found during fit")
+            _finite_values(X[col], col)  # validates numeric content
+            numeric = pd.to_numeric(X[col], errors="coerce").to_numpy(dtype=float)
+            mask = np.isfinite(numeric)
+            values = numeric[mask]
+            labels = labels_all[mask]
+            order = np.argsort(values, kind="mergesort")
+            values = values[order]
+            labels = labels[order]
+            max_cuts = None if self.max_bins is None else self.max_bins - 1
+            cuts = _mdlp_cuts(values, labels, n_classes, self.min_samples_leaf, max_cuts)
+            edges = _collapse_edges(
+                np.asarray([float(values[0]), *cuts, float(values[-1])], dtype=float)
+            )
+            self.cut_points_[col] = cuts
+            self.bin_edges_[col] = edges
+            self.n_bins_[col] = int(len(edges) - 1)
+        return None
+
+
+__all__ = ["MDLPBinning", "QuantileBinning"]
