@@ -4,7 +4,7 @@ Reusable feature-engineering transformers, an end-to-end ML workflow, and Markdo
 reporting for reproducible data-science projects.
 
 The toolkit ships scikit-learn-style transformers that operate on `pandas.DataFrame`
-objects (imputation, encoding including rare-category grouping, frequency encoding,
+objects (imputation including k-nearest-neighbour imputation, encoding including rare-category grouping, frequency encoding,
 out-of-fold, leave-one-out, CatBoost-style ordered, and James-Stein target encoding, and Weight of Evidence /
 Information Value, quantile and uniform binning, supervised MDLP (entropy) binning, scaling (including MaxAbs, Normalizer, Winsorizer, QuantileTransformer, Yeo-Johnson and Box-Cox),
 datetime extraction, polynomial/interaction and B-spline features, and feature selection), a small
@@ -148,6 +148,26 @@ scaler = QuantileTransformer(
 X_train = scaler.fit_transform(X_train)
 X_test = scaler.transform(X_test)          # reuses fit-time references
 X_back = scaler.inverse_transform(X_train) # approximate round-trip
+```
+
+## KNN imputation
+
+`KNNImputer` fills each missing numeric cell with the mean of that column over
+the `n_neighbors` nearest training rows that have it observed. Distances use
+`nan_euclidean_distances`: the Euclidean distance over shared coordinates,
+rescaled by `p / m` for missing ones (the same convention as scikit-learn,
+whose output it reproduces). With `weights="distance"`, donors are weighted
+by `1 / d`. A row that shares no coordinate with any donor falls back to the
+training mean. `add_indicator=True` appends `{column}__was_missing` flags.
+
+```python
+from feature_engineering_kit import KNNImputer, build_preprocessing_pipeline
+
+imp = KNNImputer(columns=["tenure", "monthly_charges"], n_neighbors=5, weights="distance")
+train_filled = imp.fit_transform(train_df)
+test_filled = imp.transform(test_df)        # donors come from the training rows
+
+pipe = build_preprocessing_pipeline(X, numeric_impute="knn", knn_neighbors=5)
 ```
 
 ## Out-of-fold target encoding
