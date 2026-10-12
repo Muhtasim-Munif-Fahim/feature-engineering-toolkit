@@ -27,7 +27,7 @@ from .data import (
 from .datetime import DatetimeExtractor
 from .encoding import OneHotEncoder, TargetEncoder, WoEEncoder
 from .feature_selection import CorrelationFilter, VarianceThreshold
-from .imputation import CategoricalImputer, NumericImputer
+from .imputation import CategoricalImputer, KNNImputer, NumericImputer
 from .interaction import InteractionFeatures
 from .polynomial import PolynomialFeatures
 from .scaling import StandardScaler
@@ -94,6 +94,8 @@ def build_preprocessing_pipeline(
     n_bins: int = 5,
     bin_strategy: str = "quantile",
     bin_encode: str = "ordinal",
+    numeric_impute: str = "median",
+    knn_neighbors: int = 5,
 ) -> FeatureEngineeringPipeline:
     """Build a standard preprocessing pipeline from a feature DataFrame.
 
@@ -113,6 +115,11 @@ def build_preprocessing_pipeline(
     ``"ordinal"`` or ``"onehot"``. Binned columns are left out of
     ``StandardScaler`` so ordinal codes stay ``0 .. n_bins-1``. One-hot
     encoding drops the source column.
+
+    ``numeric_impute`` is ``"median"`` (default), ``"mean"`` or ``"knn"``.
+    ``"knn"`` uses :class:`KNNImputer` with ``knn_neighbors`` donors over the
+    numeric columns, so a missing value is filled from similar rows instead of
+    a single column statistic.
     """
     schema = column_schema(X, target=None)
     numeric = list(schema.numeric)
@@ -131,7 +138,19 @@ def build_preprocessing_pipeline(
 
     steps: list[tuple[str, Transformer]] = []
     if numeric:
-        steps.append(("impute_numeric", NumericImputer(numeric, strategy="median")))
+        if numeric_impute == "knn":
+            steps.append(
+                ("impute_numeric", KNNImputer(numeric, n_neighbors=knn_neighbors))
+            )
+        elif numeric_impute in ("median", "mean"):
+            steps.append(
+                ("impute_numeric", NumericImputer(numeric, strategy=numeric_impute))
+            )
+        else:
+            raise ValueError(
+                f"unknown numeric_impute: {numeric_impute!r}; "
+                "expected 'median', 'mean' or 'knn'"
+            )
     if quantile_bin:
         steps.append(
             (

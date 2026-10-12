@@ -32,7 +32,7 @@ from .feature_selection import (
     SelectFromModel,
     VarianceThreshold,
 )
-from .imputation import CategoricalImputer, NumericImputer
+from .imputation import CategoricalImputer, KNNImputer, NumericImputer, nan_euclidean_distances
 from .interaction import InteractionFeatures
 from .pipeline import (
     ChurnEvaluation,
@@ -63,6 +63,8 @@ __all__ = [
     "stratified_split",
     "NumericImputer",
     "CategoricalImputer",
+    "KNNImputer",
+    "nan_euclidean_distances",
     "CatBoostEncoder",
     "FrequencyEncoder",
     "JamesSteinEncoder",
