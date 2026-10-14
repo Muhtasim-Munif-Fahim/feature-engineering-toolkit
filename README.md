@@ -7,7 +7,7 @@ The toolkit ships scikit-learn-style transformers that operate on `pandas.DataFr
 objects (imputation including k-nearest-neighbour imputation, encoding including rare-category grouping, frequency encoding,
 out-of-fold, leave-one-out, CatBoost-style ordered, and James-Stein target encoding, and Weight of Evidence /
 Information Value, quantile and uniform binning, supervised MDLP (entropy) binning, scaling (including MaxAbs, Normalizer, Winsorizer, QuantileTransformer, Yeo-Johnson and Box-Cox),
-datetime extraction, polynomial/interaction and B-spline features, and feature selection), a small
+datetime extraction (including CyclicalEncoder sin/cos), polynomial/interaction and B-spline features, and feature selection), a small
 workflow that loads a synthetic churn
 dataset, engineers features, trains a classifier, evaluates it, and writes a Markdown
 report, and a console-script entry point.
@@ -50,6 +50,20 @@ print(f"accuracy={result.accuracy:.3f} roc_auc={result.roc_auc:.3f}")
 See `examples/run_demo.py` for a complete end-to-end demo and `tests/` for the
 unit-test contract.
 
+
+
+
+## Cyclical encoding
+
+`CyclicalEncoder` maps a periodic numeric column onto the unit circle via
+`sin(2πx/P)` and `cos(2πx/P)`, so hour 23 sits next to hour 0:
+
+```python
+from feature_engineering_kit import CyclicalEncoder
+
+enc = CyclicalEncoder(columns=["hour", "month"], period={"hour": 24, "month": 12})
+X = enc.fit_transform(X)  # adds hour__sin/cos, month__sin/cos; drops originals
+```
 
 ## Yeo-Johnson power transform
 

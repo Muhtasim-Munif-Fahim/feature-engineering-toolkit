@@ -12,7 +12,7 @@ from .data import (
     load_synthetic_churn_dataset,
     stratified_split,
 )
-from .datetime import DatetimeExtractor
+from .datetime import CyclicalEncoder, DatetimeExtractor
 from .encoding import (
     CatBoostEncoder,
     FrequencyEncoder,
@@ -86,6 +86,7 @@ __all__ = [
     "BoxCoxScaler",
     "QuantileTransformer",
     "DatetimeExtractor",
+    "CyclicalEncoder",
     "PolynomialFeatures",
     "SplineTransformer",
     "bspline_basis",
