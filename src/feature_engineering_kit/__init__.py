@@ -16,6 +16,7 @@ from .datetime import CyclicalEncoder, DatetimeExtractor
 from .encoding import (
     CatBoostEncoder,
     FrequencyEncoder,
+    HashingEncoder,
     JamesSteinEncoder,
     LeaveOneOutEncoder,
     OneHotEncoder,
@@ -67,6 +68,7 @@ __all__ = [
     "nan_euclidean_distances",
     "CatBoostEncoder",
     "FrequencyEncoder",
+    "HashingEncoder",
     "JamesSteinEncoder",
     "LeaveOneOutEncoder",
     "OneHotEncoder",

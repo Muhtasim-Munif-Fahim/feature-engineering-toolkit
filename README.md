@@ -425,6 +425,30 @@ pipe = FeatureEngineeringPipeline(
 )
 ```
 
+## Feature hashing
+
+`HashingEncoder` applies the signed hashing trick (Weinberger et al., 2009):
+each category maps to one of `n_components` buckets, so the output width does
+not grow with cardinality, unseen levels need no special handling, and no
+per-level state is stored. A second hash bit assigns a `+1`/`-1` sign so
+colliding levels cancel in expectation (hashed inner products are unbiased
+estimates of one-hot inner products).
+
+```python
+from feature_engineering_kit import HashingEncoder
+
+enc = HashingEncoder(columns=["user_agent", "merchant_id"], n_components=32)
+out = enc.fit_transform(df)          # user_agent__hash0..31, merchant_id__hash0..31
+
+# one shared block for all columns (hashes "col=value" tokens)
+shared = HashingEncoder(columns=["user_agent", "merchant_id"], n_components=64, combine=True)
+```
+
+Hashes use keyed BLAKE2b (`seed` is the key) rather than Python's salted
+`hash()`, so encodings are identical across processes and machines. Missing
+values hash as their own token (`handle_missing="value"`) or leave the block
+all-zero (`"zero"`); `alternate_sign=False` gives plain bucket counts.
+
 ## B-spline features
 
 `SplineTransformer` replaces each selected numeric column with
