@@ -6,10 +6,13 @@ The other encoders replace object/string columns with numeric representations
 so the engineered frame is consumable by scikit-learn estimators. Target-aware
 encoders include K-fold :class:`TargetEncoder`, leave-one-out
 :class:`LeaveOneOutEncoder`, James-Stein shrinkage
-:class:`JamesSteinEncoder`, and :class:`WoEEncoder`.
+:class:`JamesSteinEncoder`, and :class:`WoEEncoder`. :class:`HashingEncoder`
+maps unbounded-cardinality columns into a fixed number of signed hash buckets.
 """
 
 from __future__ import annotations
+
+import hashlib
 
 import numpy as np
 import pandas as pd
@@ -1355,9 +1358,146 @@ class CatBoostEncoder(Transformer):
         return out
 
 
+def _stable_hash(token: str, seed: int) -> int:
+    """64-bit hash of ``token`` that is stable across processes and machines.
+
+    Python's built-in ``hash`` is salted per process for strings, which would
+    make hashed features irreproducible between training and serving.
+    """
+    digest = hashlib.blake2b(
+        token.encode("utf-8"), digest_size=8, key=int(seed).to_bytes(8, "little", signed=False)
+    ).digest()
+    return int.from_bytes(digest, "little", signed=False)
+
+
+class HashingEncoder(Transformer):
+    """Signed feature hashing for high-cardinality categoricals.
+
+    The "hashing trick" (Weinberger et al., ICML 2009) maps every category
+    string to one of ``n_components`` buckets with a fixed hash function, so
+    the output width is independent of cardinality, unseen levels need no
+    special handling, and nothing has to be stored per level. With
+    ``alternate_sign=True`` (default) a second hash bit picks a ``+1`` / ``-1``
+    sign, so colliding levels cancel in expectation and inner products between
+    hashed rows are unbiased estimates of the one-hot inner products.
+
+    Hashes use keyed BLAKE2b (``seed`` is the key), not Python's per-process
+    salted ``hash``, so encodings are reproducible across runs and machines.
+
+    Parameters
+    ----------
+    columns:
+        Categorical columns to hash. Other columns pass through unchanged.
+    n_components:
+        Number of hash buckets (output columns per block). Must be >= 1.
+    alternate_sign:
+        Use a hash-derived ``+/-1`` sign per level (default True).
+    combine:
+        If False (default), each column gets its own block named
+        ``{col}__hash{j}``. If True, all columns hash ``"col=value"`` tokens
+        into one shared block named ``{prefix}{j}`` (fewer features, more
+        collisions).
+    handle_missing:
+        ``"value"`` (default) hashes missing values as their own token;
+        ``"zero"`` leaves the row's block all-zero.
+    seed:
+        Non-negative integer key for the hash function.
+    prefix:
+        Column-name prefix for the combined block (default ``"hash__"``).
+    dtype:
+        Output dtype (default ``"float"``).
+    """
+
+    def __init__(
+        self,
+        columns,
+        n_components=8,
+        alternate_sign=True,
+        combine=False,
+        handle_missing="value",
+        seed=0,
+        prefix="hash__",
+        dtype="float",
+    ):
+        self.columns = list(columns)
+        if isinstance(n_components, bool) or int(n_components) != n_components or int(n_components) < 1:
+            raise ValueError("n_components must be an integer >= 1")
+        self.n_components = int(n_components)
+        self.alternate_sign = bool(alternate_sign)
+        self.combine = bool(combine)
+        if handle_missing not in ("value", "zero"):
+            raise ValueError("handle_missing must be 'value' or 'zero'")
+        self.handle_missing = handle_missing
+        if isinstance(seed, bool) or int(seed) != seed or int(seed) < 0:
+            raise ValueError("seed must be a non-negative integer")
+        self.seed = int(seed)
+        self.prefix = str(prefix)
+        self.dtype = dtype
+
+    def bucket_and_sign(self, column: str, value) -> tuple[int, float] | None:
+        """Return ``(bucket, sign)`` for one raw value, or ``None`` if skipped."""
+        key = _category_key(value)
+        if key is None:
+            if self.handle_missing == "zero":
+                return None
+            text = "\x00<missing>"
+        else:
+            text = str(key)
+        token = f"{column}={text}" if self.combine else text
+        h = _stable_hash(token, self.seed)
+        bucket = h % self.n_components
+        sign = -1.0 if (self.alternate_sign and (h >> 63) & 1) else 1.0
+        return int(bucket), sign
+
+    def _fit(self, X: pd.DataFrame, y=None) -> None:
+        missing = [c for c in self.columns if c not in X.columns]
+        if missing:
+            raise KeyError(f"columns not found: {missing}")
+        self.n_features_out_ = (
+            self.n_components if self.combine else self.n_components * len(self.columns)
+        )
+        return None
+
+    def _hash_block(self, X: pd.DataFrame, cols: list[str]) -> np.ndarray:
+        block = np.zeros((len(X), self.n_components), dtype=float)
+        for col in cols:
+            cache: dict = {}
+            for i, raw in enumerate(X[col].tolist()):
+                key = _category_key(raw)
+                cache_key = ("missing",) if key is None else ("v", str(key))
+                if cache_key not in cache:
+                    cache[cache_key] = self.bucket_and_sign(col, raw)
+                hit = cache[cache_key]
+                if hit is not None:
+                    block[i, hit[0]] += hit[1]
+        return block
+
+    def _transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        missing = [c for c in self.columns if c not in X.columns]
+        if missing:
+            raise KeyError(f"columns not found during transform: {missing}")
+        out = X.drop(columns=self.columns)
+        frames = []
+        if self.combine:
+            block = self._hash_block(X, self.columns)
+            names = [f"{self.prefix}{j}" for j in range(self.n_components)]
+            frames.append(pd.DataFrame(block, columns=names, index=X.index))
+        else:
+            for col in self.columns:
+                block = self._hash_block(X, [col])
+                names = [f"{col}__hash{j}" for j in range(self.n_components)]
+                frames.append(pd.DataFrame(block, columns=names, index=X.index))
+        clash = [n for f in frames for n in f.columns if n in out.columns]
+        if clash:
+            raise ValueError(f"hashed column names collide with existing columns: {clash}")
+        out = pd.concat([out, *frames], axis=1)
+        hashed = [n for f in frames for n in f.columns]
+        out[hashed] = out[hashed].astype(self.dtype)
+        return out
 
 
 __all__ = [
+    "HashingEncoder",
     "OneHotEncoder",
     "OrdinalEncoder",
     "RareCategoryGrouper",
