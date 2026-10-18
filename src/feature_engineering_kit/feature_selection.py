@@ -3,6 +3,8 @@
 These selectors are column-wise and designed to run after encoding so every
 column is numeric. They expose the same ``fit``/``transform`` interface, so they
 compose inside :class:`~feature_engineering_kit.pipeline.FeatureEngineeringPipeline`.
+:class:`MRMRSelection` adds minimum-redundancy maximum-relevance selection on
+discretized mutual information (Peng, Long & Ding, 2005).
 """
 
 from __future__ import annotations
@@ -187,9 +189,156 @@ class SelectFromModel(Transformer):
         return X.drop(columns=[c for c in self.drop_ if c in X.columns])
 
 
+def quantile_discretize(values, n_bins: int = 10) -> np.ndarray:
+    """Equal-frequency integer codes for a numeric vector.
+
+    Bin edges are the empirical quantiles; duplicate edges (heavy ties) are
+    merged, so a column with ``m < n_bins`` distinct values gets at most
+    ``m`` codes. ``NaN`` values get their own code (``-1``), so missingness
+    can carry information.
+    """
+    if isinstance(n_bins, bool) or int(n_bins) != n_bins or n_bins < 2:
+        raise ValueError("n_bins must be an integer >= 2")
+    x = np.asarray(values, dtype=float).ravel()
+    codes = np.full(x.shape[0], -1, dtype=int)
+    finite = ~np.isnan(x)
+    if not finite.any():
+        return codes
+    edges = np.unique(np.quantile(x[finite], np.linspace(0, 1, int(n_bins) + 1)[1:-1]))
+    codes[finite] = np.searchsorted(edges, x[finite], side="right")
+    return codes
+
+
+def discrete_mutual_info(a, b) -> float:
+    """Plug-in mutual information (nats) between two discrete vectors."""
+    a = np.asarray(a).ravel()
+    b = np.asarray(b).ravel()
+    if a.shape[0] != b.shape[0]:
+        raise ValueError("a and b must have the same length")
+    n = a.shape[0]
+    if n == 0:
+        return 0.0
+    _, ai = np.unique(a, return_inverse=True)
+    _, bi = np.unique(b, return_inverse=True)
+    joint = np.zeros((ai.max() + 1, bi.max() + 1))
+    np.add.at(joint, (ai, bi), 1.0)
+    joint /= n
+    pa = joint.sum(axis=1, keepdims=True)
+    pb = joint.sum(axis=0, keepdims=True)
+    nz = joint > 0
+    return float(max(0.0, np.sum(joint[nz] * np.log(joint[nz] / (pa @ pb)[nz]))))
+
+
+class MRMRSelection(Transformer):
+    """Minimum-redundancy maximum-relevance selection (Peng, Long & Ding, 2005).
+
+    Greedily picks ``k`` features. The first is the one with the highest
+    mutual information with the target; each later step picks the feature
+    maximizing
+
+    * ``"difference"`` (MID): ``I(f; y) - mean_{s in S} I(f; s)``, or
+    * ``"quotient"`` (MIQ): ``I(f; y) / (eps + mean_{s in S} I(f; s))``
+
+    over the already selected set ``S``. Unlike :class:`MutualInfoSelection`,
+    which ranks features independently, a feature that duplicates one already
+    chosen is penalized, so the selected set is informative *and*
+    non-redundant.
+
+    Mutual information is the plug-in estimate on discretized values: numeric
+    features are cut into ``n_bins`` equal-frequency bins (NaN is its own
+    bin); the target is used as-is for ``task="classification"`` and
+    quantile-binned for ``task="regression"``. This is the discretized
+    setting of the original paper and makes the selection deterministic.
+
+    Attributes
+    ----------
+    selected_:
+        Selected columns in pick order.
+    relevance_:
+        ``I(f; y)`` for every numeric column (nats).
+    scores_:
+        mRMR criterion value of each selected column at the step it was
+        picked.
+    drop_:
+        Numeric columns not selected (non-numeric columns pass through).
+    """
+
+    def __init__(
+        self,
+        target: str,
+        k: int = 10,
+        scheme: str = "difference",
+        task: str = "classification",
+        n_bins: int = 10,
+    ):
+        if scheme not in ("difference", "quotient"):
+            raise ValueError("scheme must be 'difference' or 'quotient'")
+        if task not in ("classification", "regression"):
+            raise ValueError("task must be 'classification' or 'regression'")
+        if isinstance(k, bool) or int(k) != k or k < 1:
+            raise ValueError("k must be a positive integer")
+        self.target = target
+        self.k = int(k)
+        self.scheme = scheme
+        self.task = task
+        self.n_bins = int(n_bins)
+        quantile_discretize([0.0, 1.0], self.n_bins)  # validate n_bins early
+
+    def _fit(self, X: pd.DataFrame, y=None) -> None:
+        if y is None:
+            raise ValueError("MRMRSelection.fit requires y")
+        numeric = _numeric_columns(X)
+        y_arr = np.asarray(pd.Series(y).to_numpy()).ravel()
+        if y_arr.shape[0] != len(X):
+            raise ValueError("y must have one value per row of X")
+        self.selected_: list[str] = []
+        self.scores_: dict[str, float] = {}
+        self.relevance_: dict[str, float] = {}
+        if not numeric:
+            self.drop_ = []
+            return None
+        if self.task == "regression":
+            y_codes = quantile_discretize(y_arr.astype(float), self.n_bins)
+        else:
+            y_codes = pd.factorize(pd.Series(y_arr), use_na_sentinel=False)[0]
+        codes = {c: quantile_discretize(X[c].to_numpy(dtype=float), self.n_bins) for c in numeric}
+        relevance = {c: discrete_mutual_info(codes[c], y_codes) for c in numeric}
+        self.relevance_ = relevance
+        redundancy_sum = {c: 0.0 for c in numeric}
+        remaining = list(numeric)
+        eps = 1e-12
+        while remaining and len(self.selected_) < self.k:
+            m = len(self.selected_)
+            best, best_score = None, -np.inf
+            for c in remaining:
+                if m == 0:
+                    score = relevance[c]
+                else:
+                    red = redundancy_sum[c] / m
+                    if self.scheme == "difference":
+                        score = relevance[c] - red
+                    else:
+                        score = relevance[c] / (red + eps) if relevance[c] > 0 else 0.0
+                if score > best_score + 1e-15:
+                    best, best_score = c, score
+            self.selected_.append(best)
+            self.scores_[best] = float(best_score)
+            remaining.remove(best)
+            for c in remaining:
+                redundancy_sum[c] += discrete_mutual_info(codes[c], codes[best])
+        self.drop_ = [c for c in numeric if c not in self.selected_]
+        return None
+
+    def _transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        return X.drop(columns=[c for c in self.drop_ if c in X.columns])
+
+
 __all__ = [
     "VarianceThreshold",
     "CorrelationFilter",
     "MutualInfoSelection",
     "SelectFromModel",
+    "MRMRSelection",
+    "discrete_mutual_info",
+    "quantile_discretize",
 ]

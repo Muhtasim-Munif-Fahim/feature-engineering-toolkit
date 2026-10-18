@@ -74,6 +74,20 @@ def _build_run_parser(sub):
         help="discretizer output: ordinal codes or one-hot indicators (default: ordinal)",
     )
     run.add_argument(
+        "--select-k",
+        type=int,
+        default=None,
+        metavar="K",
+        help="keep K engineered features with a final supervised selector (optional)",
+    )
+    run.add_argument(
+        "--select-method",
+        choices=["mrmr", "mutual_info"],
+        default="mrmr",
+        help="selector for --select-k: minimum-redundancy maximum-relevance or "
+        "independent mutual-information ranking (default: mrmr)",
+    )
+    run.add_argument(
         "-o",
         "--output",
         default=None,
@@ -120,6 +134,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         n_bins=args.n_bins,
         bin_strategy=args.bin_strategy,
         bin_encode=args.bin_encode,
+        select_k=args.select_k,
+        select_method=args.select_method,
     )
     report = render_markdown_report(result)
     if args.output:
@@ -150,6 +166,8 @@ def cmd_schema(args: argparse.Namespace) -> int:
 def main(argv=None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.command == "run" and args.select_k is not None and args.select_k < 1:
+        parser.error("--select-k must be a positive integer")
     if args.command == "run":
         return cmd_run(args)
     if args.command == "schema":

@@ -29,9 +29,12 @@ from .encoding import (
 )
 from .feature_selection import (
     CorrelationFilter,
+    MRMRSelection,
     MutualInfoSelection,
     SelectFromModel,
     VarianceThreshold,
+    discrete_mutual_info,
+    quantile_discretize,
 )
 from .imputation import CategoricalImputer, KNNImputer, NumericImputer, nan_euclidean_distances
 from .interaction import InteractionFeatures
@@ -96,6 +99,9 @@ __all__ = [
     "VarianceThreshold",
     "CorrelationFilter",
     "MutualInfoSelection",
+    "MRMRSelection",
+    "discrete_mutual_info",
+    "quantile_discretize",
     "SelectFromModel",
     "FeatureEngineeringPipeline",
     "build_preprocessing_pipeline",

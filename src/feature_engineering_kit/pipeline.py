@@ -26,7 +26,7 @@ from .data import (
 )
 from .datetime import DatetimeExtractor
 from .encoding import OneHotEncoder, TargetEncoder, WoEEncoder
-from .feature_selection import CorrelationFilter, VarianceThreshold
+from .feature_selection import CorrelationFilter, MRMRSelection, MutualInfoSelection, VarianceThreshold
 from .imputation import CategoricalImputer, KNNImputer, NumericImputer
 from .interaction import InteractionFeatures
 from .polynomial import PolynomialFeatures
@@ -96,6 +96,8 @@ def build_preprocessing_pipeline(
     bin_encode: str = "ordinal",
     numeric_impute: str = "median",
     knn_neighbors: int = 5,
+    select_k: int | None = None,
+    select_method: str = "mrmr",
 ) -> FeatureEngineeringPipeline:
     """Build a standard preprocessing pipeline from a feature DataFrame.
 
@@ -120,7 +122,17 @@ def build_preprocessing_pipeline(
     ``"knn"`` uses :class:`KNNImputer` with ``knn_neighbors`` donors over the
     numeric columns, so a missing value is filled from similar rows instead of
     a single column statistic.
+
+    ``select_k`` appends a final supervised selection step keeping ``select_k``
+    numeric features: ``select_method="mrmr"`` (default) uses
+    :class:`MRMRSelection` (minimum redundancy, maximum relevance), and
+    ``"mutual_info"`` ranks features independently with
+    :class:`MutualInfoSelection`. Both need ``y`` at fit time.
     """
+    if select_method not in ("mrmr", "mutual_info"):
+        raise ValueError(
+            f"unknown select_method: {select_method!r}; expected 'mrmr' or 'mutual_info'"
+        )
     schema = column_schema(X, target=None)
     numeric = list(schema.numeric)
     categorical = list(schema.categorical)
@@ -224,6 +236,14 @@ def build_preprocessing_pipeline(
         steps.append(("variance_threshold", VarianceThreshold(variance_threshold)))
     if drop_high_correlation is not None:
         steps.append(("correlation_filter", CorrelationFilter(drop_high_correlation)))
+    if select_k is not None:
+        if select_method == "mrmr":
+            selector: Transformer = MRMRSelection(target=TARGET_COLUMN, k=select_k)
+        else:
+            selector = MutualInfoSelection(
+                target=TARGET_COLUMN, k=select_k, random_state=random_state or 0
+            )
+        steps.append(("select", selector))
     return FeatureEngineeringPipeline(steps)
 
 
@@ -273,6 +293,8 @@ class ChurnEvaluation:
     dropped_by_correlation: list[str] = field(default_factory=list)
     information_values: list[tuple[str, float]] = field(default_factory=list)
     iv_details: list[dict] = field(default_factory=list)
+    selected_features: list[str] = field(default_factory=list)
+    selection_method: str | None = None
 
 
 def _build_model(name: str, seed: int):
@@ -348,6 +370,13 @@ def _collect_information_values(
     return values, details
 
 
+def _step_selected(pipeline: FeatureEngineeringPipeline) -> list[str]:
+    for name, step in pipeline.steps:
+        if name == "select":
+            return list(getattr(step, "selected_", []))
+    return []
+
+
 def run_churn_workflow(
     n_samples: int = 2000,
     seed: int = 42,
@@ -366,6 +395,8 @@ def run_churn_workflow(
     n_bins: int = 5,
     bin_strategy: str = "quantile",
     bin_encode: str = "ordinal",
+    select_k: int | None = None,
+    select_method: str = "mrmr",
 ) -> ChurnEvaluation:
     """Run a reproducible churn-classification workflow end-to-end.
 
@@ -374,7 +405,8 @@ def run_churn_workflow(
     target encoding uses K-fold out-of-fold means on train and the global
     mapping on test; optional ``woe_encode`` columns use out-of-fold Weight
     of Evidence with Information Value recorded on the result; optional
-    ``quantile_bin`` columns are discretized after imputation) -> train
+    ``quantile_bin`` columns are discretized after imputation; optional
+    ``select_k`` keeps that many features via mRMR or mutual information) -> train
     classifier -> evaluate -> return metrics plus a baseline (numeric-only)
     for comparison.
     """
@@ -432,6 +464,8 @@ def run_churn_workflow(
         n_bins=n_bins,
         bin_strategy=bin_strategy,
         bin_encode=bin_encode,
+        select_k=select_k,
+        select_method=select_method,
     )
     X_train_eng = pipeline.fit_transform(X_train, y_train)
     X_test_eng = pipeline.transform(X_test)
@@ -487,6 +521,8 @@ def run_churn_workflow(
         dropped_by_correlation=_step_drop(pipeline, "correlation_filter"),
         information_values=information_values,
         iv_details=iv_details,
+        selected_features=_step_selected(pipeline),
+        selection_method=select_method if select_k is not None else None,
     )
 
 
