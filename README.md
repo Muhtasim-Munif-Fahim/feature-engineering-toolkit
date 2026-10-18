@@ -547,3 +547,33 @@ X_train_b = mdlp.fit_transform(X_train, y_train)
 X_test_b = mdlp.transform(X_test)      # training cuts
 print(mdlp.cut_points_["age"])
 ```
+
+## mRMR feature selection
+
+`MRMRSelection` implements minimum-redundancy maximum-relevance selection
+(Peng, Long & Ding, IEEE TPAMI 2005). It starts with the feature that has the
+highest mutual information with the target, then greedily adds the feature
+maximizing `I(f; y) - mean_{s in S} I(f; s)` (`scheme="difference"`, MID) or
+`I(f; y) / mean_{s in S} I(f; s)` (`scheme="quotient"`, MIQ). Unlike
+`MutualInfoSelection`, which ranks columns independently and happily keeps
+three copies of the same signal, mRMR penalizes columns that repeat what has
+already been chosen.
+
+Mutual information is the plug-in estimate on equal-frequency bins
+(`n_bins=10`, NaN gets its own bin), so selection is deterministic. Use
+`task="regression"` to bin a continuous target.
+
+```python
+from feature_engineering_kit import MRMRSelection
+
+sel = MRMRSelection(target="churn", k=8).fit(X_train, y_train)
+sel.selected_     # pick order
+sel.relevance_    # I(f; y) per numeric column (nats)
+sel.scores_       # mRMR criterion when each feature was picked
+X_small = sel.transform(X_test)   # non-numeric columns pass through
+```
+
+In the pipeline, `build_preprocessing_pipeline(..., select_k=8,
+select_method="mrmr")` (or `"mutual_info"`) appends a final selection step,
+and the CLI exposes it as `run --select-k 8 [--select-method mutual_info]`;
+the report lists the selected features in pick order.
