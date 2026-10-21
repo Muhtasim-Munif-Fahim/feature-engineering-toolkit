@@ -577,3 +577,34 @@ In the pipeline, `build_preprocessing_pipeline(..., select_k=8,
 select_method="mrmr")` (or `"mutual_info"`) appends a final selection step,
 and the CLI exposes it as `run --select-k 8 [--select-method mutual_info]`;
 the report lists the selected features in pick order.
+
+## ReliefF feature selection
+
+`ReliefFSelection` ranks numeric columns by their ReliefF weight (Kononenko, 1994).
+For each row it finds the `n_neighbors` nearest *hits* (same class) and the
+`n_neighbors` nearest *misses* in each other class. A feature gains weight when
+it differs on misses and loses weight when it differs on hits. Neighbours are
+found in the full feature space, so ReliefF picks up features that only matter
+*jointly*. In a `y = a XOR b` target, `a` and `b` each look like noise to
+correlation or mutual-information ranking, but ReliefF ranks them first.
+
+The scoring follows scikit-rebate:
+
+- continuous diffs are range-scaled;
+- columns with at most 10 distinct values are treated as categorical (0/1 mismatch);
+- mixed data uses ReBATE's std-ramp.
+
+For complete data, `relieff_scores` reproduces `skrebate.ReliefF` to floating-point
+precision whenever `n_neighbors` is smaller than the smallest class. Missing values
+are skipped per feature.
+
+```python
+from feature_engineering_kit import ReliefFSelection, relieff_scores
+
+sel = ReliefFSelection(target="churn", k=8, n_neighbors=10).fit(X_train, y_train)
+sel.selected_      # best first
+sel.scores_        # ReliefF weight per numeric column, in [-1, 1]
+X_small = sel.transform(X_test)
+```
+
+In the pipeline use `select_method="relieff"`; in the CLI use `run --select-k 8 --select-method relieff`.

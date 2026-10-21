@@ -26,7 +26,13 @@ from .data import (
 )
 from .datetime import DatetimeExtractor
 from .encoding import OneHotEncoder, TargetEncoder, WoEEncoder
-from .feature_selection import CorrelationFilter, MRMRSelection, MutualInfoSelection, VarianceThreshold
+from .feature_selection import (
+    CorrelationFilter,
+    MRMRSelection,
+    MutualInfoSelection,
+    ReliefFSelection,
+    VarianceThreshold,
+)
 from .imputation import CategoricalImputer, KNNImputer, NumericImputer
 from .interaction import InteractionFeatures
 from .polynomial import PolynomialFeatures
@@ -127,11 +133,13 @@ def build_preprocessing_pipeline(
     numeric features: ``select_method="mrmr"`` (default) uses
     :class:`MRMRSelection` (minimum redundancy, maximum relevance), and
     ``"mutual_info"`` ranks features independently with
-    :class:`MutualInfoSelection`. Both need ``y`` at fit time.
+    :class:`MutualInfoSelection`, and ``"relieff"`` keeps the top ReliefF
+    weights (:class:`ReliefFSelection`, nearest hits/misses). All need ``y``
+    at fit time.
     """
-    if select_method not in ("mrmr", "mutual_info"):
+    if select_method not in ("mrmr", "mutual_info", "relieff"):
         raise ValueError(
-            f"unknown select_method: {select_method!r}; expected 'mrmr' or 'mutual_info'"
+            f"unknown select_method: {select_method!r}; expected 'mrmr', 'mutual_info' or 'relieff'"
         )
     schema = column_schema(X, target=None)
     numeric = list(schema.numeric)
@@ -239,6 +247,8 @@ def build_preprocessing_pipeline(
     if select_k is not None:
         if select_method == "mrmr":
             selector: Transformer = MRMRSelection(target=TARGET_COLUMN, k=select_k)
+        elif select_method == "relieff":
+            selector = ReliefFSelection(target=TARGET_COLUMN, k=select_k)
         else:
             selector = MutualInfoSelection(
                 target=TARGET_COLUMN, k=select_k, random_state=random_state or 0

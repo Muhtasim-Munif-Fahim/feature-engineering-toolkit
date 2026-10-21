@@ -31,10 +31,12 @@ from .feature_selection import (
     CorrelationFilter,
     MRMRSelection,
     MutualInfoSelection,
+    ReliefFSelection,
     SelectFromModel,
     VarianceThreshold,
     discrete_mutual_info,
     quantile_discretize,
+    relieff_scores,
 )
 from .imputation import CategoricalImputer, KNNImputer, NumericImputer, nan_euclidean_distances
 from .interaction import InteractionFeatures
@@ -100,6 +102,8 @@ __all__ = [
     "CorrelationFilter",
     "MutualInfoSelection",
     "MRMRSelection",
+    "ReliefFSelection",
+    "relieff_scores",
     "discrete_mutual_info",
     "quantile_discretize",
     "SelectFromModel",
