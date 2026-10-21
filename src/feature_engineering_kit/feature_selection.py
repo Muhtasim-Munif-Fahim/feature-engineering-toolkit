@@ -4,7 +4,9 @@ These selectors are column-wise and designed to run after encoding so every
 column is numeric. They expose the same ``fit``/``transform`` interface, so they
 compose inside :class:`~feature_engineering_kit.pipeline.FeatureEngineeringPipeline`.
 :class:`MRMRSelection` adds minimum-redundancy maximum-relevance selection on
-discretized mutual information (Peng, Long & Ding, 2005).
+discretized mutual information (Peng, Long & Ding, 2005), and
+:class:`ReliefFSelection` ranks features by ReliefF nearest-hit/miss weights
+(Kononenko, 1994), which also catch features that only matter jointly.
 """
 
 from __future__ import annotations
@@ -333,12 +335,242 @@ class MRMRSelection(Transformer):
         return X.drop(columns=[c for c in self.drop_ if c in X.columns])
 
 
+def _relieff_feature_types(
+    X: np.ndarray, categorical_features, categorical_threshold: int
+) -> np.ndarray:
+    """Boolean mask, True for categorical (discrete) columns."""
+    p = X.shape[1]
+    if categorical_features is not None:
+        mask = np.zeros(p, dtype=bool)
+        for j in categorical_features:
+            if not 0 <= int(j) < p:
+                raise ValueError(f"categorical feature index {j} out of range")
+            mask[int(j)] = True
+        return mask
+    out = np.zeros(p, dtype=bool)
+    for j in range(p):
+        col = X[:, j]
+        out[j] = np.unique(col[~np.isnan(col)]).size <= categorical_threshold
+    return out
+
+
+def relieff_scores(
+    X,
+    y,
+    n_neighbors: int = 10,
+    categorical_features=None,
+    categorical_threshold: int = 10,
+) -> np.ndarray:
+    """ReliefF feature weights (Kononenko, 1994), one per column of ``X``.
+
+    Each instance looks at its ``n_neighbors`` nearest *hits* (same class) and,
+    for every other class, its ``n_neighbors`` nearest *misses*. A feature
+    gains weight when it differs on misses and loses weight when it differs on
+    hits, so it captures interactions that univariate filters miss (XOR-style
+    targets). For each instance, hits and misses are averaged separately, and
+    the total is divided by ``n``, so the weights lie in ``[-1, 1]``. For
+    multiclass targets, each miss class is weighted by its share of the
+    misses (the ReliefF rule).
+
+    Conventions follow scikit-rebate's ``ReliefF``, so for complete data the
+    scores agree to floating-point precision:
+
+    * columns with at most ``categorical_threshold`` distinct values are
+      categorical (unless ``categorical_features`` lists the categorical
+      column indices explicitly). Their diff is 0/1 mismatch;
+    * a continuous diff is ``|a - b| / range``. With mixed data the diff
+      saturates at 1 once ``|a - b|`` exceeds the column's standard deviation
+      (ReBATE's ramp);
+    * the neighbour distance is the Manhattan distance on range-scaled
+      continuous columns. With mixed data, the Hamming fraction over the
+      categorical columns, multiplied by the number of features, is added.
+
+    Missing values (NaN) are skipped: an instance with a missing feature
+    value contributes nothing to that feature, and neighbours that are
+    missing it are left out of its average. The neighbour distance is taken
+    over the coordinates present in both rows and rescaled by the fraction
+    present. This NaN distance is this kit's own choice and is not
+    ReBATE's.
+
+    An instance is never its own neighbour. When a class has ``n_neighbors``
+    or fewer members, every other member is used, so this matches ReBATE
+    whenever ``n_neighbors`` is smaller than the smallest class. (ReBATE
+    falls back to counting the instance itself as a hit.)
+    """
+    Xa = np.asarray(X, dtype=float)
+    if Xa.ndim != 2:
+        raise ValueError("X must be 2-dimensional")
+    ya = np.asarray(y).ravel()
+    n, p = Xa.shape
+    if ya.shape[0] != n:
+        raise ValueError("y must have one value per row of X")
+    if isinstance(n_neighbors, bool) or int(n_neighbors) != n_neighbors or n_neighbors < 1:
+        raise ValueError("n_neighbors must be a positive integer")
+    k = int(n_neighbors)
+    if pd.isna(pd.Series(ya)).any():
+        raise ValueError("y must not contain missing values")
+    classes, y_codes = np.unique(ya, return_inverse=True)
+    if classes.size < 2:
+        raise ValueError("ReliefF needs at least two classes")
+    if p == 0:
+        return np.zeros(0)
+    cat = _relieff_feature_types(Xa, categorical_features, int(categorical_threshold))
+    cont = ~cat
+    nan = np.isnan(Xa)
+    with np.errstate(all="ignore"):
+        mn = np.where(cont, np.nanmin(np.where(nan, np.inf, Xa), axis=0), 0.0)
+        mx = np.where(cont, np.nanmax(np.where(nan, -np.inf, Xa), axis=0), 0.0)
+        sd = np.array([np.nanstd(Xa[:, j]) if cont[j] and (~nan[:, j]).any() else 0.0 for j in range(p)])
+    rng_ = mx - mn
+    rng_safe = np.where(rng_ > 0, rng_, 1.0)
+    mixed = bool(cat.any() and cont.any())
+
+    # neighbour distances
+    Xc = (Xa[:, cont] - mn[cont]) / rng_safe[cont]
+    Xd = Xa[:, cat]
+    if not nan.any():
+        D = np.zeros((n, n))
+        if cont.any():
+            D += np.abs(Xc[:, None, :] - Xc[None, :, :]).sum(axis=2)
+        if cat.any():
+            ham = (Xd[:, None, :] != Xd[None, :, :]).sum(axis=2) / Xd.shape[1]
+            D += ham * p if mixed else ham
+    else:
+        both_c = (~np.isnan(Xc))[:, None, :] & (~np.isnan(Xc))[None, :, :]
+        both_d = (~np.isnan(Xd))[:, None, :] & (~np.isnan(Xd))[None, :, :]
+        dc = np.where(both_c, np.abs(np.nan_to_num(Xc)[:, None, :] - np.nan_to_num(Xc)[None, :, :]), 0.0).sum(axis=2)
+        dd = np.where(both_d, np.nan_to_num(Xd)[:, None, :] != np.nan_to_num(Xd)[None, :, :], False).sum(axis=2)
+        present = both_c.sum(axis=2) + both_d.sum(axis=2)
+        n_d = max(int(cat.sum()), 1)
+        raw = dc + (dd / n_d * p if mixed else dd / n_d)
+        D = np.where(present > 0, raw * (p / np.maximum(present, 1)), np.inf)
+    np.fill_diagonal(D, np.inf)
+
+    def feature_diff(j: int, a: float, b: np.ndarray) -> np.ndarray:
+        if cat[j]:
+            return (b != a).astype(float)
+        raw = np.abs(a - b)
+        if rng_[j] <= 0:
+            return np.zeros_like(raw)
+        if mixed:
+            return np.where(raw > sd[j], 1.0, raw / rng_[j])
+        return raw / rng_[j]
+
+    n_classes = classes.size
+    weights = np.zeros(p)
+    for i in range(n):
+        order = np.argsort(D[i])
+        order = order[np.isfinite(D[i, order])]
+        yo = y_codes[order]
+        hits = order[yo == y_codes[i]][:k]
+        miss_by_class = {c: order[yo == c][:k] for c in range(n_classes) if c != y_codes[i]}
+        for j in range(p):
+            a = Xa[i, j]
+            if np.isnan(a):
+                continue
+            h = hits[~nan[hits, j]]
+            if n_classes == 2:
+                (m,) = miss_by_class.values()
+                m = m[~nan[m, j]]
+                ch, cm = h.size, m.size
+                if ch == 0 and cm == 0:
+                    continue
+                dh = -feature_diff(j, a, Xa[h, j]).sum() if ch else 0.0
+                dm = feature_diff(j, a, Xa[m, j]).sum() if cm else 0.0
+                val = (dh / ch if ch else 0.0) + (dm / cm if cm else 0.0)
+            else:
+                ms = {c: idx[~nan[idx, j]] for c, idx in miss_by_class.items()}
+                cm = sum(v.size for v in ms.values())
+                ch = h.size
+                if ch == 0 and cm == 0:
+                    continue
+                val = 0.0
+                if cm:
+                    acc = 0.0
+                    for v in ms.values():
+                        if v.size:
+                            acc += feature_diff(j, a, Xa[v, j]).sum() * (v.size / cm) * len(ms)
+                    val += acc / cm
+                if ch:
+                    val += -feature_diff(j, a, Xa[h, j]).sum() / ch
+            weights[j] += val / n
+    return weights
+
+
+class ReliefFSelection(Transformer):
+    """Keep the ``k`` numeric columns with the highest ReliefF weight.
+
+    ReliefF (Kononenko, 1994) scores each feature by how well it separates
+    nearby instances of different classes, compared with nearby instances
+    of the same class. Because neighbours are found in the full feature
+    space, it rewards features that matter only *jointly* (for example
+    ``y = a XOR b``), which ranking by mutual information or correlation
+    cannot detect. See :func:`relieff_scores` for the exact scoring
+    conventions. Columns are only scale-normalised (by range), so encode
+    categoricals numerically first. Non-numeric columns pass through.
+
+    Attributes
+    ----------
+    scores_:
+        ReliefF weight for every numeric column.
+    selected_:
+        Kept columns, best first.
+    drop_:
+        Numeric columns not kept.
+    """
+
+    def __init__(
+        self,
+        target: str,
+        k: int = 10,
+        n_neighbors: int = 10,
+        categorical_threshold: int = 10,
+    ):
+        if isinstance(k, bool) or int(k) != k or k < 1:
+            raise ValueError("k must be a positive integer")
+        if isinstance(n_neighbors, bool) or int(n_neighbors) != n_neighbors or n_neighbors < 1:
+            raise ValueError("n_neighbors must be a positive integer")
+        self.target = target
+        self.k = int(k)
+        self.n_neighbors = int(n_neighbors)
+        self.categorical_threshold = int(categorical_threshold)
+
+    def _fit(self, X: pd.DataFrame, y=None) -> None:
+        if y is None:
+            raise ValueError("ReliefFSelection.fit requires y")
+        numeric = _numeric_columns(X)
+        y_arr = np.asarray(pd.Series(y).to_numpy()).ravel()
+        if y_arr.shape[0] != len(X):
+            raise ValueError("y must have one value per row of X")
+        self.scores_: dict[str, float] = {}
+        self.selected_: list[str] = []
+        if not numeric:
+            self.drop_ = []
+            return None
+        w = relieff_scores(
+            X[numeric].to_numpy(dtype=float),
+            y_arr,
+            n_neighbors=self.n_neighbors,
+            categorical_threshold=self.categorical_threshold,
+        )
+        self.scores_ = {c: float(v) for c, v in zip(numeric, w)}
+        order = sorted(range(len(numeric)), key=lambda i: (-w[i], i))
+        self.selected_ = [numeric[i] for i in order[: self.k]]
+        self.drop_ = [c for c in numeric if c not in self.selected_]
+        return None
+
+    def _transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        return X.drop(columns=[c for c in self.drop_ if c in X.columns])
+
+
 __all__ = [
     "VarianceThreshold",
     "CorrelationFilter",
     "MutualInfoSelection",
     "SelectFromModel",
     "MRMRSelection",
+    "ReliefFSelection",
+    "relieff_scores",
     "discrete_mutual_info",
     "quantile_discretize",
 ]
