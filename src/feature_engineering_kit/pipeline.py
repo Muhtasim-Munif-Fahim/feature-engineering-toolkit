@@ -33,7 +33,7 @@ from .feature_selection import (
     ReliefFSelection,
     VarianceThreshold,
 )
-from .imputation import CategoricalImputer, KNNImputer, NumericImputer
+from .imputation import CategoricalImputer, IterativeImputer, KNNImputer, NumericImputer
 from .interaction import InteractionFeatures
 from .polynomial import PolynomialFeatures
 from .scaling import StandardScaler
@@ -124,7 +124,8 @@ def build_preprocessing_pipeline(
     ``StandardScaler`` so ordinal codes stay ``0 .. n_bins-1``. One-hot
     encoding drops the source column.
 
-    ``numeric_impute`` is ``"median"`` (default), ``"mean"`` or ``"knn"``.
+    ``numeric_impute`` is ``"median"`` (default), ``"mean"``, ``"knn"`` or
+    ``"iterative"`` (:class:`IterativeImputer`, chained Bayesian ridge).
     ``"knn"`` uses :class:`KNNImputer` with ``knn_neighbors`` donors over the
     numeric columns, so a missing value is filled from similar rows instead of
     a single column statistic.
@@ -162,6 +163,8 @@ def build_preprocessing_pipeline(
             steps.append(
                 ("impute_numeric", KNNImputer(numeric, n_neighbors=knn_neighbors))
             )
+        elif numeric_impute == "iterative":
+            steps.append(("impute_numeric", IterativeImputer(numeric)))
         elif numeric_impute in ("median", "mean"):
             steps.append(
                 ("impute_numeric", NumericImputer(numeric, strategy=numeric_impute))
@@ -169,7 +172,7 @@ def build_preprocessing_pipeline(
         else:
             raise ValueError(
                 f"unknown numeric_impute: {numeric_impute!r}; "
-                "expected 'median', 'mean' or 'knn'"
+                "expected 'median', 'mean', 'knn' or 'iterative'"
             )
     if quantile_bin:
         steps.append(

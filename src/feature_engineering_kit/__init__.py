@@ -38,7 +38,14 @@ from .feature_selection import (
     quantile_discretize,
     relieff_scores,
 )
-from .imputation import CategoricalImputer, KNNImputer, NumericImputer, nan_euclidean_distances
+from .imputation import (
+    CategoricalImputer,
+    IterativeImputer,
+    KNNImputer,
+    NumericImputer,
+    fit_bayesian_ridge,
+    nan_euclidean_distances,
+)
 from .interaction import InteractionFeatures
 from .pipeline import (
     ChurnEvaluation,
@@ -57,6 +64,8 @@ __version__ = "0.1.0"
 __all__ = [
     "__version__",
     "Transformer",
+    "IterativeImputer",
+    "fit_bayesian_ridge",
     "QuantileBinning",
     "MDLPBinning",
     "ColumnSchema",

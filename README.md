@@ -184,6 +184,23 @@ test_filled = imp.transform(test_df)        # donors come from the training rows
 pipe = build_preprocessing_pipeline(X, numeric_impute="knn", knn_neighbors=5)
 ```
 
+## Iterative (MICE) imputation
+
+`IterativeImputer` imputes numeric columns with chained regressions (van Buuren & Groothuis-Oudshoorn 2011). Missing cells start at the column mean. Each round then regresses every column on all the other columns and overwrites that column's missing cells with the predictions. Rounds stop at `max_iter`, or when the change in matrix infinity norm drops below `tol * max|observed|`.
+
+- The default estimator is `"bayesian_ridge"`, which uses evidence-maximized ridge regression (`fit_bayesian_ridge`). `"linear"` uses ordinary least squares.
+- `imputation_order` can be `ascending`, `descending`, `roman` or `arabic`. `min_value` and `max_value` clip imputed values, and `add_indicator` appends missing-value indicator columns.
+- `transform` replays the fitted regression sequence on new data.
+- Results match scikit-learn's `IterativeImputer` (`sample_posterior=False`) to floating-point precision, using pure NumPy.
+- Pipeline option: `build_preprocessing_pipeline(..., numeric_impute="iterative")`.
+
+```python
+from feature_engineering_kit import IterativeImputer
+imp = IterativeImputer(["age", "income", "tenure"], max_iter=10, add_indicator=True)
+train_filled = imp.fit_transform(train)
+test_filled = imp.transform(test)
+```
+
 ## Out-of-fold target encoding
 
 `TargetEncoder` replaces categorical values with a smoothed mean of the target.
