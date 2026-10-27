@@ -625,3 +625,32 @@ X_small = sel.transform(X_test)
 ```
 
 In the pipeline use `select_method="relieff"`; in the CLI use `run --select-k 8 --select-method relieff`.
+
+## Boruta all-relevant feature selection
+
+`BorutaSelection` (Kursa & Rudnicki, 2010) asks which features are *relevant at all*
+rather than picking a fixed top-k. Every iteration it appends a row-permuted "shadow"
+copy of the numeric columns, fits a tree ensemble on real + shadow features and
+records a hit for each real feature whose importance beats the best shadow
+(`perc=100`, or a lower percentile). Hit counts are tested against
+`Binomial(t, 0.5)` with Bonferroni-adjusted `alpha`: features are **confirmed**,
+**rejected** (and dropped from later fits) or left **tentative** after `max_iter`.
+
+```python
+from feature_engineering_kit import BorutaSelection
+
+sel = BorutaSelection(target="churn", max_iter=100, alpha=0.05).fit(X, y)
+sel.status_            # {"tenure": "confirmed", "noise": "rejected", ...}
+sel.hits_, sel.decided_at_, sel.importance_history_
+X_sel = sel.transform(X)  # keeps confirmed columns (keep_tentative=True to add tentative)
+```
+
+Defaults use a depth-5 random forest (classifier or regressor chosen from `y`); pass
+any estimator with `feature_importances_`. `max_features` caps the kept set by mean
+importance. By default shadows of *all* columns are kept every iteration
+(`shadow_all=True`) so the threshold does not loosen as features are rejected.
+Boruta measures in-sample relevance, so with small samples a noise column with a
+chance association can still be confirmed.
+
+In the pipeline/CLI: `select_method="boruta"` / `--select-method boruta`, with
+`--select-k` acting as the cap.

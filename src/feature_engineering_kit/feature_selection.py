@@ -7,6 +7,9 @@ compose inside :class:`~feature_engineering_kit.pipeline.FeatureEngineeringPipel
 discretized mutual information (Peng, Long & Ding, 2005), and
 :class:`ReliefFSelection` ranks features by ReliefF nearest-hit/miss weights
 (Kononenko, 1994), which also catch features that only matter jointly.
+:class:`BorutaSelection` is the all-relevant Boruta wrapper (Kursa &
+Rudnicki, 2010): features must beat randomly permuted "shadow" copies of
+themselves in tree importance more often than chance.
 """
 
 from __future__ import annotations
@@ -563,6 +566,214 @@ class ReliefFSelection(Transformer):
         return X.drop(columns=[c for c in self.drop_ if c in X.columns])
 
 
+def _is_classification_target(y: np.ndarray) -> bool:
+    if y.dtype.kind in "OUSb":
+        return True
+    if y.dtype.kind in "iu":
+        return len(np.unique(y)) <= max(20, int(0.05 * len(y)))
+    return False
+
+
+class BorutaSelection(Transformer):
+    """All-relevant feature selection with Boruta (Kursa & Rudnicki, 2010).
+
+    Each iteration appends a *shadow* copy of every still-active numeric
+    column with its rows independently permuted, fits a tree ensemble on the
+    real + shadow matrix, and records a **hit** for every real feature whose
+    importance exceeds the ``perc``-th percentile of the shadow importances
+    (``perc=100`` is the classic "max shadow" rule). After ``t`` iterations
+    a feature's hit count is ``Binomial(t, 0.5)`` under the null of being no
+    better than noise, so two one-sided binomial tests decide it:
+
+    * **confirmed** when ``P(H >= hits) < alpha``;
+    * **rejected** when ``P(H <= hits) < alpha`` (it is then removed from
+      later fits);
+    * **tentative** if still undecided after ``max_iter`` iterations.
+
+    With ``bonferroni=True`` (default, as in the reference R package)
+    ``alpha`` is divided by the number of undecided features at each test.
+
+    Parameters
+    ----------
+    target:
+        Name used to label the target (values come from ``y``).
+    estimator:
+        Optional scikit-learn estimator exposing ``feature_importances_``. By
+        default a ``RandomForestClassifier`` or ``RandomForestRegressor``
+        (``max_depth=5``, balanced classes) is chosen from ``y``.
+    n_estimators, max_iter, alpha, perc, bonferroni:
+        See above.
+    keep_tentative:
+        Also keep tentative features (default only confirmed ones are kept).
+    max_features:
+        Optional cap: keep at most this many kept features, ranked by mean
+        importance across iterations.
+    random_state:
+        Seed for shadow permutations and the default forest.
+    shadow_all:
+        Keep a shadow for *every* numeric column in each iteration, including
+        rejected ones (default). The reference implementations only shadow
+        still-active columns, which makes the max-shadow threshold easier to
+        beat as features are rejected and inflates false confirmations on
+        small samples; ``shadow_all=False`` restores that behaviour.
+
+    Attributes
+    ----------
+    status_:
+        ``"confirmed"``, ``"tentative"`` or ``"rejected"`` per numeric column.
+    hits_:
+        Hit counts per numeric column.
+    decided_at_:
+        Iteration at which each confirmed/rejected column was decided.
+    importance_history_:
+        DataFrame (iterations x numeric columns) of importances; ``NaN`` once a
+        column is rejected. Column ``"__shadow_threshold__"`` holds the shadow
+        cut-off used each iteration.
+    n_iter_:
+        Iterations actually run (stops early once every feature is decided).
+    selected_, drop_:
+        Kept and dropped numeric columns.
+    """
+
+    def __init__(
+        self,
+        target: str,
+        estimator=None,
+        n_estimators: int = 100,
+        max_iter: int = 100,
+        alpha: float = 0.05,
+        perc: float = 100.0,
+        bonferroni: bool = True,
+        keep_tentative: bool = False,
+        max_features: int | None = None,
+        random_state: int | None = 0,
+        shadow_all: bool = True,
+    ):
+        if isinstance(max_iter, bool) or int(max_iter) != max_iter or max_iter < 1:
+            raise ValueError("max_iter must be a positive integer")
+        if isinstance(n_estimators, bool) or int(n_estimators) != n_estimators or n_estimators < 1:
+            raise ValueError("n_estimators must be a positive integer")
+        if not 0.0 < float(alpha) < 1.0:
+            raise ValueError("alpha must be in (0, 1)")
+        if not 0.0 < float(perc) <= 100.0:
+            raise ValueError("perc must be in (0, 100]")
+        if max_features is not None and (
+            isinstance(max_features, bool) or int(max_features) != max_features or max_features < 1
+        ):
+            raise ValueError("max_features must be a positive integer or None")
+        self.target = target
+        self.estimator = estimator
+        self.n_estimators = int(n_estimators)
+        self.max_iter = int(max_iter)
+        self.alpha = float(alpha)
+        self.perc = float(perc)
+        self.bonferroni = bool(bonferroni)
+        self.keep_tentative = bool(keep_tentative)
+        self.max_features = None if max_features is None else int(max_features)
+        self.random_state = random_state
+        self.shadow_all = bool(shadow_all)
+
+    def _make_estimator(self, y: np.ndarray):
+        if self.estimator is not None:
+            return _clone_estimator(self.estimator)
+        from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+
+        if _is_classification_target(y):
+            return RandomForestClassifier(
+                n_estimators=self.n_estimators,
+                max_depth=5,
+                class_weight="balanced",
+                n_jobs=1,
+                random_state=self.random_state,
+            )
+        return RandomForestRegressor(
+            n_estimators=self.n_estimators,
+            max_depth=5,
+            n_jobs=1,
+            random_state=self.random_state,
+        )
+
+    def _fit(self, X: pd.DataFrame, y=None) -> None:
+        from scipy.stats import binom
+
+        if y is None:
+            raise ValueError("BorutaSelection.fit requires y")
+        numeric = _numeric_columns(X)
+        y_arr = np.asarray(pd.Series(y).to_numpy()).ravel()
+        if y_arr.shape[0] != len(X):
+            raise ValueError("y must have one value per row of X")
+        self.status_: dict[str, str] = {}
+        self.hits_: dict[str, int] = {}
+        self.decided_at_: dict[str, int] = {}
+        self.selected_: list[str] = []
+        self.drop_: list[str] = []
+        self.n_iter_ = 0
+        if not numeric:
+            self.importance_history_ = pd.DataFrame()
+            return None
+        values = X[numeric].to_numpy(dtype=float)
+        if not np.all(np.isfinite(values)):
+            raise ValueError("BorutaSelection needs finite numeric columns; impute first")
+        p = len(numeric)
+        rng = np.random.default_rng(self.random_state)
+        hits = np.zeros(p, dtype=int)
+        status = np.zeros(p, dtype=int)  # 0 undecided, 1 confirmed, -1 rejected
+        decided = np.zeros(p, dtype=int)
+        history: list[np.ndarray] = []
+        for it in range(1, self.max_iter + 1):
+            active = np.flatnonzero(status >= 0)
+            real = values[:, active]
+            shadow_src = values if self.shadow_all else real
+            shadow = np.column_stack(
+                [rng.permutation(shadow_src[:, j]) for j in range(shadow_src.shape[1])]
+            )
+            model = self._make_estimator(y_arr)
+            if hasattr(model, "random_state") and self.estimator is None:
+                model.set_params(random_state=int(rng.integers(0, 2**31 - 1)))
+            model.fit(np.hstack([real, shadow]), y_arr)
+            imp = np.asarray(getattr(model, "feature_importances_"), dtype=float)
+            if imp.shape[0] != len(active) + shadow.shape[1]:
+                raise AttributeError("estimator must expose one feature_importances_ value per column")
+            imp_real, imp_shadow = imp[: len(active)], imp[len(active):]
+            threshold = float(np.percentile(imp_shadow, self.perc))
+            row = np.full(p + 1, np.nan)
+            row[active] = imp_real
+            row[p] = threshold
+            history.append(row)
+            hits[active[imp_real > threshold]] += 1
+            undecided = np.flatnonzero(status == 0)
+            level = self.alpha / len(undecided) if (self.bonferroni and len(undecided)) else self.alpha
+            for j in undecided:
+                p_accept = float(binom.sf(hits[j] - 1, it, 0.5))
+                p_reject = float(binom.cdf(hits[j], it, 0.5))
+                if p_accept < level:
+                    status[j] = 1
+                    decided[j] = it
+                elif p_reject < level:
+                    status[j] = -1
+                    decided[j] = it
+            self.n_iter_ = it
+            if not np.any(status == 0):
+                break
+        names = {1: "confirmed", 0: "tentative", -1: "rejected"}
+        self.status_ = {c: names[int(s)] for c, s in zip(numeric, status)}
+        self.hits_ = {c: int(h) for c, h in zip(numeric, hits)}
+        self.decided_at_ = {c: int(d) for c, d, s in zip(numeric, decided, status) if s != 0}
+        self.importance_history_ = pd.DataFrame(history, columns=numeric + ["__shadow_threshold__"])
+        mean_imp = self.importance_history_[numeric].mean(axis=0, skipna=True).fillna(0.0)
+        keep_codes = (1, 0) if self.keep_tentative else (1,)
+        kept = [c for c, s in zip(numeric, status) if int(s) in keep_codes]
+        kept.sort(key=lambda c: (-float(mean_imp[c]), numeric.index(c)))
+        if self.max_features is not None:
+            kept = kept[: self.max_features]
+        self.selected_ = kept
+        self.drop_ = [c for c in numeric if c not in kept]
+        return None
+
+    def _transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        return X.drop(columns=[c for c in self.drop_ if c in X.columns])
+
+
 __all__ = [
     "VarianceThreshold",
     "CorrelationFilter",
@@ -570,6 +781,7 @@ __all__ = [
     "SelectFromModel",
     "MRMRSelection",
     "ReliefFSelection",
+    "BorutaSelection",
     "relieff_scores",
     "discrete_mutual_info",
     "quantile_discretize",

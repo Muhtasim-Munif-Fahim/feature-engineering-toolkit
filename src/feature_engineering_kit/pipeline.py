@@ -27,6 +27,7 @@ from .data import (
 from .datetime import DatetimeExtractor
 from .encoding import OneHotEncoder, TargetEncoder, WoEEncoder
 from .feature_selection import (
+    BorutaSelection,
     CorrelationFilter,
     MRMRSelection,
     MutualInfoSelection,
@@ -135,12 +136,13 @@ def build_preprocessing_pipeline(
     :class:`MRMRSelection` (minimum redundancy, maximum relevance), and
     ``"mutual_info"`` ranks features independently with
     :class:`MutualInfoSelection`, and ``"relieff"`` keeps the top ReliefF
-    weights (:class:`ReliefFSelection`, nearest hits/misses). All need ``y``
-    at fit time.
+    weights (:class:`ReliefFSelection`, nearest hits/misses), and ``"boruta"``
+    keeps Boruta-confirmed features (:class:`BorutaSelection`), at most
+    ``select_k`` of them by mean importance. All need ``y`` at fit time.
     """
-    if select_method not in ("mrmr", "mutual_info", "relieff"):
+    if select_method not in ("mrmr", "mutual_info", "relieff", "boruta"):
         raise ValueError(
-            f"unknown select_method: {select_method!r}; expected 'mrmr', 'mutual_info' or 'relieff'"
+            f"unknown select_method: {select_method!r}; expected 'mrmr', 'mutual_info', 'relieff' or 'boruta'"
         )
     schema = column_schema(X, target=None)
     numeric = list(schema.numeric)
@@ -252,6 +254,10 @@ def build_preprocessing_pipeline(
             selector: Transformer = MRMRSelection(target=TARGET_COLUMN, k=select_k)
         elif select_method == "relieff":
             selector = ReliefFSelection(target=TARGET_COLUMN, k=select_k)
+        elif select_method == "boruta":
+            selector = BorutaSelection(
+                target=TARGET_COLUMN, max_features=select_k, random_state=random_state or 0
+            )
         else:
             selector = MutualInfoSelection(
                 target=TARGET_COLUMN, k=select_k, random_state=random_state or 0
