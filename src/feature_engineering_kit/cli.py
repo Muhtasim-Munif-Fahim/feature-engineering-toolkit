@@ -82,10 +82,11 @@ def _build_run_parser(sub):
     )
     run.add_argument(
         "--select-method",
-        choices=["mrmr", "mutual_info", "relieff"],
+        choices=["mrmr", "mutual_info", "relieff", "boruta"],
         default="mrmr",
         help="selector for --select-k: minimum-redundancy maximum-relevance, "
-        "independent mutual-information ranking, or ReliefF weights (default: mrmr)",
+        "independent mutual-information ranking, ReliefF weights, or Boruta "
+        "(confirmed features, at most K) (default: mrmr)",
     )
     run.add_argument(
         "-o",

@@ -28,6 +28,7 @@ from .encoding import (
     iv_strength,
 )
 from .feature_selection import (
+    BorutaSelection,
     CorrelationFilter,
     MRMRSelection,
     MutualInfoSelection,
@@ -112,6 +113,7 @@ __all__ = [
     "MutualInfoSelection",
     "MRMRSelection",
     "ReliefFSelection",
+    "BorutaSelection",
     "relieff_scores",
     "discrete_mutual_info",
     "quantile_discretize",
