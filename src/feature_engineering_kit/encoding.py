@@ -1510,3 +1510,199 @@ __all__ = [
     "information_value",
     "iv_strength",
 ]
+
+
+_CONTRAST_SCHEMES = ("treatment", "sum", "helmert", "backward_difference", "polynomial")
+_MISSING_LEVEL = "__missing__"
+
+
+def contrast_matrix(scheme: str, n_levels: int, scores=None) -> np.ndarray:
+    """Return the ``n_levels x (n_levels - 1)`` coding matrix of a contrast.
+
+    Row ``i`` is the encoding of level ``i``. Used with an intercept, the
+    regression coefficients have the classic interpretations (R
+    ``contr.*`` / UCLA contrast-coding conventions):
+
+    ``"treatment"``
+        Dummy coding against the first level: ``beta_j = mu_j - mu_0``.
+    ``"sum"``
+        Deviation coding (last level gets ``-1``): the intercept is the
+        unweighted mean of the level means and ``beta_j = mu_j - mean(mu)``.
+    ``"helmert"``
+        R ``contr.helmert``: column ``j`` contrasts level ``j`` with the mean
+        of the previous levels, ``beta_j = (mu_j - mean(mu_0..mu_{j-1})) / (j + 1)``.
+    ``"backward_difference"``
+        Successive differences: ``beta_j = mu_j - mu_{j-1}``.
+    ``"polynomial"``
+        Orthonormal polynomial contrasts (R ``contr.poly``) for ordered
+        levels at ``scores`` (default ``0..k-1``): linear, quadratic, ...
+    """
+    if scheme not in _CONTRAST_SCHEMES:
+        raise ValueError(f"scheme must be one of {_CONTRAST_SCHEMES}, got {scheme!r}")
+    k = int(n_levels)
+    if k < 1:
+        raise ValueError("n_levels must be >= 1")
+    if k == 1:
+        return np.zeros((1, 0))
+    if scheme == "treatment":
+        return np.eye(k)[:, 1:]
+    if scheme == "sum":
+        mat = np.zeros((k, k - 1))
+        mat[: k - 1] = np.eye(k - 1)
+        mat[k - 1] = -1.0
+        return mat
+    if scheme == "helmert":
+        mat = np.zeros((k, k - 1))
+        for j in range(1, k):
+            mat[:j, j - 1] = -1.0
+            mat[j, j - 1] = float(j)
+        return mat
+    if scheme == "backward_difference":
+        mat = np.zeros((k, k - 1))
+        for j in range(1, k):
+            mat[:j, j - 1] = -(k - j) / k
+            mat[j:, j - 1] = j / k
+        return mat
+    x = np.arange(k, dtype=float) if scores is None else np.asarray(scores, dtype=float)
+    if x.shape != (k,):
+        raise ValueError(f"scores must have length {k}")
+    if not np.all(np.isfinite(x)) or len(np.unique(x)) != k:
+        raise ValueError("scores must be finite and distinct")
+    x = x - x.mean()
+    vander = np.vander(x, k, increasing=True)
+    q, r = np.linalg.qr(vander)
+    q = q * np.sign(np.diag(r))  # make the leading coefficient of each degree positive
+    return q[:, 1:]
+
+
+class ContrastEncoder(Transformer):
+    """Encode categoricals with classical statistical contrasts.
+
+    Each column with ``k`` levels becomes ``k - 1`` numeric columns from
+    :func:`contrast_matrix`. Unlike one-hot encoding, the columns are full rank
+    alongside an intercept, and linear-model coefficients answer a specific
+    question: difference from a reference (``"treatment"``), deviation from the
+    grand mean (``"sum"``), difference from the previous levels (``"helmert"``),
+    successive differences (``"backward_difference"``), or linear / quadratic /
+    ... trends over ordered levels (``"polynomial"``).
+
+    Parameters
+    ----------
+    columns:
+        Categorical columns to encode.
+    scheme:
+        One of ``"treatment"``, ``"sum"``, ``"helmert"``,
+        ``"backward_difference"``, ``"polynomial"``. A dict maps column names
+        to schemes; unlisted columns use ``"sum"``.
+    categories:
+        Optional ``{column: [levels in order]}``. Level order matters for every
+        scheme except ``"sum"``'s interpretation; the default is sorted order
+        of the observed string values.
+    scores:
+        Optional ``{column: [numeric score per level]}`` for unequally spaced
+        polynomial contrasts.
+    handle_unknown:
+        ``"zeros"`` (all-zero row, the grand mean for ``sum`` / ``helmert`` /
+        ``polynomial``) or ``"error"``.
+    handle_missing:
+        ``"zeros"``, ``"error"``, or ``"category"`` (missing becomes its own
+        last level ``"__missing__"`` when present during fit).
+    """
+
+    def __init__(
+        self,
+        columns,
+        scheme="sum",
+        categories=None,
+        scores=None,
+        handle_unknown="zeros",
+        handle_missing="zeros",
+    ):
+        self.columns = list(columns)
+        self.scheme = scheme
+        self.categories = dict(categories or {})
+        self.scores = dict(scores or {})
+        self.handle_unknown = handle_unknown
+        self.handle_missing = handle_missing
+
+    def _scheme_for(self, col: str) -> str:
+        if isinstance(self.scheme, dict):
+            return self.scheme.get(col, "sum")
+        return self.scheme
+
+    def _fit(self, X: pd.DataFrame, y=None) -> None:
+        if self.handle_unknown not in ("zeros", "error"):
+            raise ValueError("handle_unknown must be 'zeros' or 'error'")
+        if self.handle_missing not in ("zeros", "error", "category"):
+            raise ValueError("handle_missing must be 'zeros', 'error' or 'category'")
+        self.categories_: dict[str, list[str]] = {}
+        self.coding_: dict[str, pd.DataFrame] = {}
+        self.feature_names_: dict[str, list[str]] = {}
+        for col in self.columns:
+            if col not in X.columns:
+                raise KeyError(f"column '{col}' not found during fit")
+            scheme = self._scheme_for(col)
+            if scheme not in _CONTRAST_SCHEMES:
+                raise ValueError(f"scheme must be one of {_CONTRAST_SCHEMES}, got {scheme!r}")
+            series = X[col]
+            if self.handle_missing == "error" and series.isna().any():
+                raise ValueError(f"column '{col}' has missing values")
+            if col in self.categories:
+                cats = [str(c) for c in self.categories[col]]
+                if len(set(cats)) != len(cats):
+                    raise ValueError(f"categories for '{col}' contain duplicates")
+            else:
+                cats = sorted({str(v) for v in series.dropna().tolist()})
+            if self.handle_missing == "category" and series.isna().any() and _MISSING_LEVEL not in cats:
+                cats.append(_MISSING_LEVEL)
+            if not cats:
+                raise ValueError(f"column '{col}' has no observed levels")
+            mat = contrast_matrix(scheme, len(cats), self.scores.get(col))
+            names = self._names(col, scheme, cats, mat.shape[1])
+            self.categories_[col] = cats
+            self.coding_[col] = pd.DataFrame(mat, index=cats, columns=names)
+            self.feature_names_[col] = names
+        return None
+
+    @staticmethod
+    def _names(col, scheme, cats, n):
+        if scheme == "treatment":
+            return [f"{col}__{c}" for c in cats[1:]]
+        if scheme == "sum":
+            return [f"{col}__sum_{c}" for c in cats[:-1]]
+        if scheme == "helmert":
+            return [f"{col}__helmert_{c}" for c in cats[1:]]
+        if scheme == "backward_difference":
+            return [f"{col}__diff_{b}_vs_{a}" for a, b in zip(cats[:-1], cats[1:])]
+        labels = {1: "linear", 2: "quadratic", 3: "cubic"}
+        return [f"{col}__poly_{labels.get(d, f'deg{d}')}" for d in range(1, n + 1)]
+
+    def _transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        out = X.copy()
+        for col in self.columns:
+            if col not in out.columns:
+                raise KeyError(f"column '{col}' not found during transform")
+            coding = self.coding_[col]
+            series = out[col]
+            missing = series.isna().to_numpy()
+            if self.handle_missing == "error" and missing.any():
+                raise ValueError(f"column '{col}' has missing values")
+            keys = series.astype(object).map(str).to_numpy(dtype=object)
+            if self.handle_missing == "category":
+                keys = np.where(missing, _MISSING_LEVEL, keys)
+            index = {c: i for i, c in enumerate(coding.index)}
+            pos = np.array([index.get(k, -1) for k in keys], dtype=int)
+            if self.handle_missing != "category":
+                pos[missing] = -1
+            unknown = (pos < 0) & ~missing
+            if self.handle_unknown == "error" and unknown.any():
+                bad = sorted({str(k) for k in keys[unknown]})
+                raise ValueError(f"unknown categories in '{col}': {bad}")
+            mat = coding.to_numpy()
+            values = np.zeros((len(out), mat.shape[1]))
+            known = pos >= 0
+            values[known] = mat[pos[known]]
+            out = out.drop(columns=[col])
+            for j, name in enumerate(coding.columns):
+                out[name] = values[:, j]
+        return out
