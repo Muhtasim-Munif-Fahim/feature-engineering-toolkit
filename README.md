@@ -442,6 +442,34 @@ pipe = FeatureEngineeringPipeline(
 )
 ```
 
+## Contrast coding
+
+`ContrastEncoder` replaces each categorical with `k - 1` columns from a classical
+contrast matrix (`contrast_matrix(scheme, k)`, matching R's `contr.*`). With an
+intercept, linear-model coefficients then answer a specific question:
+
+| scheme | coefficient `beta_j` |
+| --- | --- |
+| `treatment` | `mu_j - mu_0` (difference from the first/reference level) |
+| `sum` | `mu_j - mean(mu)`; intercept = unweighted grand mean |
+| `helmert` | `(mu_j - mean(mu_0..mu_{j-1})) / (j + 1)` |
+| `backward_difference` | `mu_j - mu_{j-1}` |
+| `polynomial` | orthonormal linear / quadratic / cubic ... trends over ordered levels (optional unequal `scores`) |
+
+```python
+from feature_engineering_kit import ContrastEncoder
+
+enc = ContrastEncoder(
+    columns=["dose", "region"],
+    scheme={"dose": "polynomial", "region": "sum"},
+    categories={"dose": ["low", "mid", "high"]},
+    handle_unknown="zeros",      # or "error"
+    handle_missing="category",   # or "zeros" / "error"
+)
+X_enc = enc.fit_transform(X)
+enc.coding_["dose"]              # the contrast matrix used, indexed by level
+```
+
 ## Feature hashing
 
 `HashingEncoder` applies the signed hashing trick (Weinberger et al., 2009):
