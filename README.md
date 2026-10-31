@@ -442,6 +442,25 @@ pipe = FeatureEngineeringPipeline(
 )
 ```
 
+## Group-by aggregation features
+
+`GroupAggregateFeatures` learns per-group statistics on the training data and
+maps them onto each row by its group key. Aggregations: `mean`, `std`, `min`,
+`max`, `median`, `sum`, `count`, `nunique`; relative features: `diff`
+(x − group mean), `ratio` (x / group mean) and `zscore`. Unseen groups and
+groups smaller than `min_group_size` fall back to the global statistic, and
+missing keys form their own group.
+
+```python
+from feature_engineering_kit import GroupAggregateFeatures
+
+agg = GroupAggregateFeatures(["region", "tier"], ["spend"],
+                             aggs=["mean", "count"], relative=["diff", "zscore"],
+                             min_group_size=5)
+X_train_aug = agg.fit_transform(X_train)
+X_test_aug = agg.transform(X_test)   # spend_mean_by_region_tier, ...
+```
+
 ## Contrast coding
 
 `ContrastEncoder` replaces each categorical with `k - 1` columns from a classical

@@ -1,5 +1,6 @@
 """feature_engineering_kit: transformers, ML workflow, and reporting."""
 
+from .aggregation import GroupAggregateFeatures
 from .base import Transformer
 from .binning import MDLPBinning, QuantileBinning
 from .data import (
@@ -112,6 +113,7 @@ __all__ = [
     "SplineTransformer",
     "bspline_basis",
     "InteractionFeatures",
+    "GroupAggregateFeatures",
     "VarianceThreshold",
     "CorrelationFilter",
     "MutualInfoSelection",
