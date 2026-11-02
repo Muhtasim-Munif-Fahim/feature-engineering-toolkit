@@ -539,6 +539,32 @@ an intercept) and `keep_original=True` to keep the source column. Missing
 values give `NaN` in every spline column of that row. `bspline_basis(x, knots,
 degree)` exposes the underlying Cox-de Boor evaluator.
 
+## Kernel feature maps (random Fourier features, Nystroem)
+
+`RandomFourierFeatures` and `NystroemFeatures` replace a block of numeric
+columns with an explicit feature map `z(x)` whose inner products approximate a
+kernel, `z(x) . z(y) ~= k(x, y)`. A linear model on these columns then
+approximates the kernel machine in linear time.
+
+```python
+from feature_engineering_kit import NystroemFeatures, RandomFourierFeatures
+
+rff = RandomFourierFeatures(columns=["a", "b"], n_components=300, kernel="rbf", gamma=0.5, random_state=0)
+X_train = rff.fit_transform(X_train)  # a, b -> rff_0 .. rff_299; other columns pass through
+X_test = rff.transform(X_test)
+
+nys = NystroemFeatures(columns=["a", "b"], n_components=100, kernel="polynomial", degree=2)
+```
+
+Random Fourier features (Rahimi & Recht) sample `W` from the kernel's spectral
+density (Gaussian for `"rbf"`, Cauchy for `"laplacian"`) and use
+`sqrt(2/D) cos(Wx + b)`. Nystroem picks `n_components` landmark rows and maps
+`k(x, L) K_LL^{-1/2}`. It depends on the data, is usually more accurate for the
+same budget, and also supports `"polynomial"` and `"linear"` kernels.
+`gamma=None` uses `1 / n_columns`. Inputs must be finite (impute first).
+`transform_array` returns only the kernel features, and `kernel_matrix(A, B,
+kernel, gamma=...)` computes the exact kernel for comparison.
+
 ## Quantile binning
 
 `QuantileBinning` discretizes numeric columns. The default

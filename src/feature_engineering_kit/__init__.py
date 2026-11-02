@@ -62,6 +62,7 @@ from .polynomial import PolynomialFeatures
 from .reporting import render_markdown_report, save_report
 from .scaling import BoxCoxScaler, MaxAbsScaler, MinMaxScaler, Normalizer, QuantileTransformer, RobustScaler, StandardScaler, Winsorizer, YeoJohnsonScaler
 from .splines import SplineTransformer, bspline_basis
+from .kernel_features import NystroemFeatures, RandomFourierFeatures, kernel_matrix
 
 __version__ = "0.1.0"
 
@@ -111,6 +112,9 @@ __all__ = [
     "CyclicalEncoder",
     "PolynomialFeatures",
     "SplineTransformer",
+    "RandomFourierFeatures",
+    "NystroemFeatures",
+    "kernel_matrix",
     "bspline_basis",
     "InteractionFeatures",
     "GroupAggregateFeatures",
