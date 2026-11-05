@@ -461,6 +461,23 @@ X_train_aug = agg.fit_transform(X_train)
 X_test_aug = agg.transform(X_test)   # spend_mean_by_region_tier, ...
 ```
 
+## Lag, diff and rolling-window features
+
+`LagFeatures` adds time-series / panel features: `x_lag_k`, `x_diff_k`
+(`x - x_lag_k`) and rolling statistics over the *previous* `w` rows
+(`x_roll{w}_mean`, `_std`, `_min`, `_max`, `_sum`, `_median`). Windows are
+left-closed, so the current value never leaks into its own features. Use
+`group_by` for per-entity features and `order_by` to sort by time; output rows
+keep their original order and index.
+
+```python
+from feature_engineering_kit import LagFeatures
+
+lags = LagFeatures(["sales"], lags=[1, 7], diffs=[1], windows=[7, 28],
+                   window_aggs=["mean", "std"], group_by="store", order_by="date")
+features = lags.fit_transform(df)
+```
+
 ## Contrast coding
 
 `ContrastEncoder` replaces each categorical with `k - 1` columns from a classical

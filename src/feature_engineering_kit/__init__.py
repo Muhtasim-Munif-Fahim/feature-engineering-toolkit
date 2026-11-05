@@ -62,6 +62,7 @@ from .polynomial import PolynomialFeatures
 from .reporting import render_markdown_report, save_report
 from .scaling import BoxCoxScaler, MaxAbsScaler, MinMaxScaler, Normalizer, QuantileTransformer, RobustScaler, StandardScaler, Winsorizer, YeoJohnsonScaler
 from .splines import SplineTransformer, bspline_basis
+from .temporal import LagFeatures
 from .kernel_features import NystroemFeatures, RandomFourierFeatures, kernel_matrix
 
 __version__ = "0.1.0"
@@ -69,6 +70,7 @@ __version__ = "0.1.0"
 __all__ = [
     "__version__",
     "Transformer",
+    "LagFeatures",
     "IterativeImputer",
     "fit_bayesian_ridge",
     "QuantileBinning",
