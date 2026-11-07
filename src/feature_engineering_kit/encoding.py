@@ -1498,6 +1498,7 @@ class HashingEncoder(Transformer):
 
 __all__ = [
     "HashingEncoder",
+    "BinaryEncoder",
     "OneHotEncoder",
     "OrdinalEncoder",
     "RareCategoryGrouper",
@@ -1507,6 +1508,8 @@ __all__ = [
     "CatBoostEncoder",
     "JamesSteinEncoder",
     "WoEEncoder",
+    "ContrastEncoder",
+    "contrast_matrix",
     "information_value",
     "iv_strength",
 ]
@@ -1706,3 +1709,122 @@ class ContrastEncoder(Transformer):
             for j, name in enumerate(coding.columns):
                 out[name] = values[:, j]
         return out
+
+
+
+class BinaryEncoder(Transformer):
+    """Encode categoricals as compact binary bit columns.
+
+    Each column with ``k`` observed levels (plus an optional missing /
+    unknown slot) is mapped to integers ``0 .. k-1`` and expanded into
+    ``ceil(log2(k_eff))`` binary columns ``{col}__bin{j}``. This is the
+    classic "binary encoding" / base-2 ordinal trick: far fewer columns
+    than one-hot when cardinality is large, while remaining lossless for
+    the fitted vocabulary.
+
+    Parameters
+    ----------
+    columns:
+        Categorical columns to encode.
+    handle_unknown:
+        ``"indicator"`` (default) reserves bit-pattern ``0`` for unseen /
+        missing values and shifts fitted levels to ``1 .. k``;
+        ``"error"`` raises on unknowns; ``"zeros"`` emits an all-zero row.
+    drop_original:
+        Drop the source columns from the output (default True).
+    """
+
+    def __init__(
+        self,
+        columns,
+        handle_unknown: str = "indicator",
+        drop_original: bool = True,
+    ):
+        self.columns = [columns] if isinstance(columns, str) else list(columns)
+        if not self.columns:
+            raise ValueError("columns must not be empty")
+        if handle_unknown not in ("indicator", "error", "zeros"):
+            raise ValueError(
+                'handle_unknown must be "indicator", "error", or "zeros"'
+            )
+        self.handle_unknown = handle_unknown
+        self.drop_original = bool(drop_original)
+        self.categories_: dict[str, list[str]] = {}
+        self.n_bits_: dict[str, int] = {}
+        self.mapping_: dict[str, dict[str, int]] = {}
+        self.feature_names_out_: list[str] = []
+
+    @staticmethod
+    def _n_bits(n_codes: int) -> int:
+        if n_codes <= 1:
+            return 1
+        return int(n_codes - 1).bit_length()
+
+    def _fit(self, X: pd.DataFrame, y=None) -> None:
+        missing = [c for c in self.columns if c not in X.columns]
+        if missing:
+            raise KeyError(f"columns not found: {missing}")
+        self.categories_ = {}
+        self.mapping_ = {}
+        self.n_bits_ = {}
+        names: list[str] = []
+        for col in self.columns:
+            cats = sorted({str(v) for v in X[col].dropna().tolist()})
+            self.categories_[col] = cats
+            if self.handle_unknown == "indicator":
+                # 0 reserved for unknown/missing; fitted levels use 1..k
+                mapping = {cat: i + 1 for i, cat in enumerate(cats)}
+                n_codes = len(cats) + 1
+            else:
+                mapping = {cat: i for i, cat in enumerate(cats)}
+                n_codes = max(len(cats), 1)
+            self.mapping_[col] = mapping
+            n_bits = self._n_bits(n_codes)
+            self.n_bits_[col] = n_bits
+            names.extend(f"{col}__bin{j}" for j in range(n_bits))
+        self.feature_names_out_ = names
+        return None
+
+    def _codes(self, col: str, series: pd.Series) -> np.ndarray:
+        mapping = self.mapping_[col]
+        values = series.astype(object)
+        codes = np.empty(len(values), dtype=int)
+        for i, v in enumerate(values.tolist()):
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                codes[i] = -1
+                continue
+            codes[i] = mapping.get(str(v), -1)
+        return codes
+
+    def _transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        out = X.copy()
+        frames = []
+        for col in self.columns:
+            if col not in out.columns:
+                raise KeyError(f"column '{col}' not found during transform")
+            codes = self._codes(col, out[col])
+            unknown = codes < 0
+            if self.handle_unknown == "error" and unknown.any():
+                bad = sorted({str(v) for v in out.loc[unknown, col].tolist()})
+                raise ValueError(f"unknown categories in '{col}': {bad}")
+            if self.handle_unknown == "indicator":
+                codes = np.where(unknown, 0, codes)
+            elif self.handle_unknown == "zeros":
+                codes = np.where(unknown, 0, codes)
+            n_bits = self.n_bits_[col]
+            bits = np.zeros((len(out), n_bits), dtype=float)
+            known = ~unknown if self.handle_unknown == "zeros" else np.ones(len(out), dtype=bool)
+            for j in range(n_bits):
+                bits[known, j] = ((codes[known] >> j) & 1).astype(float)
+            frame = pd.DataFrame(
+                bits,
+                index=out.index,
+                columns=[f"{col}__bin{j}" for j in range(n_bits)],
+            )
+            frames.append(frame)
+        if self.drop_original:
+            out = out.drop(columns=list(self.columns))
+        if frames:
+            out = pd.concat([out, *frames], axis=1)
+        return out
+
