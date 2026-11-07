@@ -4,7 +4,7 @@ Reusable feature-engineering transformers, an end-to-end ML workflow, and Markdo
 reporting for reproducible data-science projects.
 
 The toolkit ships scikit-learn-style transformers that operate on `pandas.DataFrame`
-objects (imputation including k-nearest-neighbour imputation, encoding including rare-category grouping, frequency encoding,
+objects (imputation including k-nearest-neighbour imputation, encoding including binary bit encoding, rare-category grouping, frequency encoding,
 out-of-fold, leave-one-out, CatBoost-style ordered, and James-Stein target encoding, and Weight of Evidence /
 Information Value, quantile and uniform binning, supervised MDLP (entropy) binning, scaling (including MaxAbs, Normalizer, Winsorizer, QuantileTransformer, Yeo-Johnson and Box-Cox),
 datetime extraction (including CyclicalEncoder sin/cos), polynomial/interaction and B-spline features, and feature selection), a small
@@ -52,6 +52,19 @@ unit-test contract.
 
 
 
+
+## Binary encoding
+
+`BinaryEncoder` maps each categorical level to a compact set of binary bit
+columns (`ceil(log2(k))` bits). With `handle_unknown="indicator"` (default)
+bit-pattern `0` is reserved for missing / unseen values.
+
+```python
+from feature_engineering_kit import BinaryEncoder
+
+enc = BinaryEncoder(columns=["city", "plan"])
+X = enc.fit_transform(X)  # adds city__bin0.., plan__bin0..; drops originals
+```
 
 ## Cyclical encoding
 

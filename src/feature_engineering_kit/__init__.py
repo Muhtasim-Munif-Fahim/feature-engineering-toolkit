@@ -16,6 +16,7 @@ from .data import (
 from .datetime import CyclicalEncoder, DatetimeExtractor
 from .encoding import (
     CatBoostEncoder,
+    BinaryEncoder,
     ContrastEncoder,
     FrequencyEncoder,
     HashingEncoder,
@@ -88,6 +89,7 @@ __all__ = [
     "KNNImputer",
     "nan_euclidean_distances",
     "CatBoostEncoder",
+    "BinaryEncoder",
     "ContrastEncoder",
     "contrast_matrix",
     "FrequencyEncoder",
