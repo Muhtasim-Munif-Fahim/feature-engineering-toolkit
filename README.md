@@ -491,6 +491,20 @@ lags = LagFeatures(["sales"], lags=[1, 7], diffs=[1], windows=[7, 28],
 features = lags.fit_transform(df)
 ```
 
+## TF-IDF text features
+
+`TfidfFeatures` turns free-text columns into dense `{col}__tfidf__{term}` columns. It learns the vocabulary, document frequencies and IDF weights on `fit` only, so new rows never leak statistics; unseen words are ignored and missing text counts as an empty document. Weighting matches scikit-learn's `TfidfVectorizer`: smooth IDF `ln((1+n)/(1+df)) + 1`, optional sublinear TF, and L2/L1 row normalisation. The tests compare against it in eight configurations.
+
+```python
+from feature_engineering_kit import TfidfFeatures
+
+tfidf = TfidfFeatures("review", ngram_range=(1, 2), min_df=2, max_features=500,
+                      stop_words={"the", "and"}, sublinear_tf=True)
+train_feats = tfidf.fit_transform(train_df)   # drops "review", adds review__tfidf__* columns
+test_feats = tfidf.transform(test_df)
+tfidf.vocabulary_["review"][:5], tfidf.idf_["review"][:5]
+```
+
 ## Contrast coding
 
 `ContrastEncoder` replaces each categorical with `k - 1` columns from a classical
