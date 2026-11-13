@@ -62,6 +62,7 @@ from .pipeline import (
 from .polynomial import PolynomialFeatures
 from .reporting import render_markdown_report, save_report
 from .scaling import BoxCoxScaler, MaxAbsScaler, MinMaxScaler, Normalizer, QuantileTransformer, RobustScaler, StandardScaler, Winsorizer, YeoJohnsonScaler
+from .spectral_selection import FisherScoreSelection, LaplacianScoreSelection, fisher_scores, laplacian_scores
 from .splines import SplineTransformer, bspline_basis
 from .temporal import LagFeatures
 from .text import TfidfFeatures
@@ -130,6 +131,10 @@ __all__ = [
     "MRMRSelection",
     "ReliefFSelection",
     "BorutaSelection",
+    "LaplacianScoreSelection",
+    "FisherScoreSelection",
+    "laplacian_scores",
+    "fisher_scores",
     "relieff_scores",
     "discrete_mutual_info",
     "quantile_discretize",

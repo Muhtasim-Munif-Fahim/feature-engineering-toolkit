@@ -712,6 +712,26 @@ select_method="mrmr")` (or `"mutual_info"`) appends a final selection step,
 and the CLI exposes it as `run --select-k 8 [--select-method mutual_info]`;
 the report lists the selected features in pick order.
 
+## Laplacian Score and Fisher Score selection
+
+`LaplacianScoreSelection` is an unsupervised filter (He, Cai & Niyogi, 2005).
+It builds a symmetrised kNN graph with heat-kernel weights on the
+(standardised) numeric columns and keeps the `k` columns with the lowest
+Laplacian Score `f~'Lf~ / f~'Df~`, i.e. features that change little between
+neighbouring rows relative to their overall variance. `FisherScoreSelection`
+keeps the `k` columns with the highest between/within-class scatter ratio.
+`laplacian_scores(X, graph="supervised", y=y)` uses the class graph, for which
+the Laplacian Score equals `1 / (1 + fisher_score)`.
+
+```python
+from feature_engineering_kit import FisherScoreSelection, LaplacianScoreSelection, laplacian_scores
+
+unsup = LaplacianScoreSelection(k=8, n_neighbors=5, t="auto").fit(X_train)
+sup = FisherScoreSelection(k=8).fit(X_train, y_train)
+unsup.scores_, sup.selected_
+X_small = sup.transform(X_test)
+```
+
 ## ReliefF feature selection
 
 `ReliefFSelection` ranks numeric columns by their ReliefF weight (Kononenko, 1994).
